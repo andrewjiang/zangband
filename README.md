@@ -13,6 +13,8 @@ Right now this builds a double-clickable `.app` bundle that runs the original
 game core, renders it in a native Cocoa window, and fixes several 64-bit macOS
 portability issues.
 
+![Zangband running as a native macOS app](docs/assets/zangband-mac-app.png)
+
 ## Upstream
 
 This work is based on the original Zangband source repository:
