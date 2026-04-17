@@ -3,6 +3,10 @@
 #ifndef INCLUDED_H_CONFIG_H
 #define INCLUDED_H_CONFIG_H
 
+#ifdef HAVE_CONFIG_H
+#include "autoconf.h"
+#endif /* HAVE_CONFIG_H */
+
 /*
  * Choose the hardware, operating system, and compiler.
  * Also, choose various "system level" compilation options.
