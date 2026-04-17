@@ -18,6 +18,8 @@
 #define COCOA_COLS 80
 #define COCOA_ROWS 24
 #define COCOA_KEY_QUEUE 1024
+#define COCOA_INSPECTOR_WIDTH 310.0
+#define COCOA_MESSAGE_LIMIT 300
 #define COCOA_CTRL(c) ((c) & 0x1F)
 
 extern int zangband_game_main(int argc, char **argv);
@@ -52,12 +54,386 @@ static int key_tail = 0;
 static bool redraw_queued = FALSE;
 
 @class ZBCocoaTermView;
+@class ZBCocoaInspectorView;
 static ZBCocoaTermView *cocoa_view = nil;
+static ZBCocoaInspectorView *cocoa_inspector = nil;
+static NSMutableArray<NSString *> *message_history = nil;
 
 static void cocoa_queue_redraw(void);
 static void cocoa_enqueue_key(int key);
 
+static NSString *ZBTrim(NSString *string)
+{
+	if (!string) return @"";
+	return [string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+}
+
+static NSString *ZBStringFromBytes(const char *bytes, NSUInteger length)
+{
+	if (!bytes || !length) return @"";
+
+	NSUInteger actualLength = 0;
+	while (actualLength < length && bytes[actualLength] != '\0') actualLength++;
+
+	NSString *string = [[NSString alloc] initWithBytes:bytes
+	                                            length:actualLength
+	                                          encoding:NSASCIIStringEncoding];
+	if (!string)
+	{
+		string = [[NSString alloc] initWithBytes:bytes
+		                                  length:actualLength
+		                                encoding:NSISOLatin1StringEncoding] ?: @"";
+	}
+
+	return ZBTrim(string);
+}
+
+static NSString *ZBKeyString(int key)
+{
+	unichar ch = (unichar)key;
+	return [NSString stringWithCharacters:&ch length:1];
+}
+
+static NSArray<NSURL *> *ZBApplicationSupportRoots(void)
+{
+	NSFileManager *fm = NSFileManager.defaultManager;
+	NSURL *base = [[fm URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask] firstObject];
+	if (!base) return @[];
+
+	return @[
+		[base URLByAppendingPathComponent:@"ZangbandNative" isDirectory:YES],
+		[base URLByAppendingPathComponent:@"Zangband" isDirectory:YES]
+	];
+}
+
+static NSString *ZBReadableDate(NSDate *date)
+{
+	if (!date) return @"Unknown";
+
+	static NSDateFormatter *formatter = nil;
+	static dispatch_once_t onceToken;
+	dispatch_once(&onceToken, ^{
+		formatter = [[NSDateFormatter alloc] init];
+		formatter.dateStyle = NSDateFormatterMediumStyle;
+		formatter.timeStyle = NSDateFormatterShortStyle;
+	});
+
+	return [formatter stringFromDate:date];
+}
+
+static NSArray<NSString *> *cocoa_snapshot_rows(void)
+{
+	NSMutableArray<NSString *> *rows = [NSMutableArray arrayWithCapacity:COCOA_ROWS];
+
+	pthread_mutex_lock(&screen_lock);
+	for (int y = 0; y < COCOA_ROWS; y++)
+	{
+		char line[COCOA_COLS + 1];
+		for (int x = 0; x < COCOA_COLS; x++)
+		{
+			char c = screen_cells[y][x].c;
+			line[x] = c ? c : ' ';
+		}
+		line[COCOA_COLS] = '\0';
+		[rows addObject:ZBTrim(ZBStringFromBytes(line, COCOA_COLS))];
+	}
+	pthread_mutex_unlock(&screen_lock);
+
+	return rows;
+}
+
+static NSString *ZBJoinedVisibleScreen(void)
+{
+	NSArray<NSString *> *rows = cocoa_snapshot_rows();
+	NSMutableString *screen = [NSMutableString string];
+
+	for (NSString *row in rows)
+	{
+		if (row.length) [screen appendFormat:@"%@\n", row];
+	}
+
+	return screen.length ? screen : @"No visible game text yet.";
+}
+
+static NSString *ZBFirstLineContaining(NSArray<NSString *> *rows, NSArray<NSString *> *needles)
+{
+	for (NSString *row in rows)
+	{
+		for (NSString *needle in needles)
+		{
+			if ([row rangeOfString:needle options:NSCaseInsensitiveSearch].location != NSNotFound)
+			{
+				return row;
+			}
+		}
+	}
+
+	return @"Unknown";
+}
+
+static NSString *ZBValueAfterLabel(NSArray<NSString *> *rows, NSArray<NSString *> *labels)
+{
+	for (NSString *row in rows)
+	{
+		for (NSString *label in labels)
+		{
+			NSRange range = [row rangeOfString:label options:NSCaseInsensitiveSearch];
+			if (range.location == NSNotFound) continue;
+
+			NSUInteger start = NSMaxRange(range);
+			while (start < row.length && [[NSCharacterSet whitespaceCharacterSet] characterIsMember:[row characterAtIndex:start]]) start++;
+			if (start < row.length && [row characterAtIndex:start] == ':') start++;
+
+			NSString *value = ZBTrim([row substringFromIndex:start]);
+			if (value.length) return value;
+		}
+	}
+
+	return @"Unknown";
+}
+
+static NSString *ZBActiveCharacterSummary(void)
+{
+	NSArray<NSString *> *rows = cocoa_snapshot_rows();
+	NSString *name = player_name[0] ? ZBStringFromBytes(player_name, sizeof(player_name)) : ZBValueAfterLabel(rows, @[@"Name"]);
+	NSString *level = (p_ptr && p_ptr->lev > 0) ? [NSString stringWithFormat:@"%d", p_ptr->lev] : ZBValueAfterLabel(rows, @[@"LEVEL", @"Level"]);
+	NSString *depth = @"Unknown";
+	NSString *death = @"Alive / in progress";
+
+	if (p_ptr)
+	{
+		if (p_ptr->depth > 0)
+		{
+			depth = [NSString stringWithFormat:@"%d", p_ptr->depth];
+		}
+		else if (p_ptr->state.playing || character_dungeon)
+		{
+			depth = @"Town / wilderness";
+		}
+
+		if (p_ptr->state.is_dead)
+		{
+			NSString *cause = ZBStringFromBytes(p_ptr->state.died_from, sizeof(p_ptr->state.died_from));
+			death = cause.length ? [NSString stringWithFormat:@"Dead: %@", cause] : @"Dead";
+		}
+		else if (!p_ptr->state.playing && !character_dungeon)
+		{
+			death = @"Not currently in a run";
+		}
+	}
+
+	if ([depth isEqualToString:@"Unknown"])
+	{
+		depth = ZBValueAfterLabel(rows, @[@"DEPTH", @"Depth", @"Dungeon"]);
+	}
+
+	for (NSString *row in rows)
+	{
+		if ([row rangeOfString:@"killed by" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+		    [row rangeOfString:@"died" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+		    [row rangeOfString:@"dead" options:NSCaseInsensitiveSearch].location != NSNotFound)
+		{
+			if (![death hasPrefix:@"Dead"]) death = @"Dead / post-run screen";
+			break;
+		}
+	}
+
+	if ([name isEqualToString:@"Unknown"])
+	{
+		name = ZBFirstLineContaining(rows, @[@"Name"]);
+	}
+
+	return [NSString stringWithFormat:@"Active character: %@\nLevel: %@\nDepth: %@\nStatus: %@",
+	        name, level, depth, death];
+}
+
+static NSString *ZBFileSizeString(unsigned long long bytes)
+{
+	NSByteCountFormatter *formatter = [[NSByteCountFormatter alloc] init];
+	formatter.countStyle = NSByteCountFormatterCountStyleFile;
+	return [formatter stringFromByteCount:(long long)bytes];
+}
+
+static NSString *ZBSaveManagerReport(void)
+{
+	NSFileManager *fm = NSFileManager.defaultManager;
+	NSMutableString *report = [NSMutableString stringWithFormat:@"Save Manager\n============\n\n%@\n\n",
+	                           ZBActiveCharacterSummary()];
+	NSDate *latestDate = nil;
+	NSMutableArray<NSString *> *saveLines = [NSMutableArray array];
+
+	for (NSURL *root in ZBApplicationSupportRoots())
+	{
+		NSURL *saveURL = [[root URLByAppendingPathComponent:@"lib" isDirectory:YES] URLByAppendingPathComponent:@"save" isDirectory:YES];
+		NSArray<NSURL *> *files = [fm contentsOfDirectoryAtURL:saveURL
+		                             includingPropertiesForKeys:@[NSURLIsRegularFileKey, NSURLContentModificationDateKey, NSURLFileSizeKey]
+		                                                options:NSDirectoryEnumerationSkipsHiddenFiles
+		                                                  error:nil] ?: @[];
+
+		for (NSURL *fileURL in files)
+		{
+			if ([fileURL.lastPathComponent isEqualToString:@"makefile.zb"]) continue;
+
+			NSNumber *isRegular = nil;
+			[fileURL getResourceValue:&isRegular forKey:NSURLIsRegularFileKey error:nil];
+			if (!isRegular.boolValue) continue;
+
+			NSDate *modified = nil;
+			NSNumber *size = nil;
+			[fileURL getResourceValue:&modified forKey:NSURLContentModificationDateKey error:nil];
+			[fileURL getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
+			if (!latestDate || [modified compare:latestDate] == NSOrderedDescending) latestDate = modified;
+
+			NSString *appName = [root.lastPathComponent isEqualToString:@"ZangbandNative"] ? @"Native" : @"Wrapper";
+			[saveLines addObject:[NSString stringWithFormat:@"%@ save: %@\n  Last played: %@\n  Size: %@\n  Path: %@",
+			                      appName,
+			                      fileURL.lastPathComponent,
+			                      ZBReadableDate(modified),
+			                      ZBFileSizeString(size.unsignedLongLongValue),
+			                      fileURL.path]];
+		}
+	}
+
+	[report appendFormat:@"Last played time: %@\n\n", latestDate ? ZBReadableDate(latestDate) : @"No save files found"];
+
+	if (saveLines.count)
+	{
+		[report appendString:@"Known Saves\n-----------\n\n"];
+		[saveLines sortUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
+		[report appendString:[saveLines componentsJoinedByString:@"\n\n"]];
+	}
+	else
+	{
+		[report appendString:@"No save files were found in the native or wrapper app support folders."];
+	}
+
+	[report appendString:@"\n\nNote: Zangband save files are legacy binary files. The native manager shows exact file metadata and live character details from the running screen; historical depth/level/death details come from the morgue scores when a run has ended."];
+
+	return report;
+}
+
+static NSArray<NSDictionary<NSString *, NSString *> *> *ZBMorgueEntries(void)
+{
+	NSMutableArray<NSDictionary<NSString *, NSString *> *> *entries = [NSMutableArray array];
+	NSFileManager *fm = NSFileManager.defaultManager;
+
+	for (NSURL *root in ZBApplicationSupportRoots())
+	{
+		NSURL *scoresURL = [[[root URLByAppendingPathComponent:@"lib" isDirectory:YES] URLByAppendingPathComponent:@"apex" isDirectory:YES] URLByAppendingPathComponent:@"scores.raw"];
+		NSData *data = [NSData dataWithContentsOfURL:scoresURL];
+		if (data.length < sizeof(high_score)) continue;
+
+		const high_score *scores = (const high_score *)data.bytes;
+		NSUInteger count = data.length / sizeof(high_score);
+		NSString *source = [root.lastPathComponent isEqualToString:@"ZangbandNative"] ? @"Native" : @"Wrapper";
+
+		for (NSUInteger i = 0; i < count; i++)
+		{
+			NSString *who = ZBStringFromBytes(scores[i].who, sizeof(scores[i].who));
+			NSString *how = ZBStringFromBytes(scores[i].how, sizeof(scores[i].how));
+			if (!who.length || !how.length) continue;
+
+			[entries addObject:@{
+				@"source": source,
+				@"who": who,
+				@"how": how,
+				@"score": ZBStringFromBytes(scores[i].pts, sizeof(scores[i].pts)),
+				@"turns": ZBStringFromBytes(scores[i].turns, sizeof(scores[i].turns)),
+				@"day": ZBStringFromBytes(scores[i].day, sizeof(scores[i].day)),
+				@"level": ZBStringFromBytes(scores[i].cur_lev, sizeof(scores[i].cur_lev)),
+				@"depth": ZBStringFromBytes(scores[i].cur_dun, sizeof(scores[i].cur_dun)),
+				@"maxLevel": ZBStringFromBytes(scores[i].max_lev, sizeof(scores[i].max_lev)),
+				@"maxDepth": ZBStringFromBytes(scores[i].max_dun, sizeof(scores[i].max_dun))
+			}];
+		}
+	}
+
+	[entries sortUsingComparator:^NSComparisonResult(NSDictionary<NSString *, NSString *> *a, NSDictionary<NSString *, NSString *> *b) {
+		NSInteger left = a[@"score"].integerValue;
+		NSInteger right = b[@"score"].integerValue;
+		if (left == right) return [a[@"who"] localizedCaseInsensitiveCompare:b[@"who"]];
+		return (left > right) ? NSOrderedAscending : NSOrderedDescending;
+	}];
+
+	return entries;
+}
+
+static NSString *ZBMorgueReport(void)
+{
+	NSArray<NSDictionary<NSString *, NSString *> *> *entries = ZBMorgueEntries();
+	NSMutableString *report = [NSMutableString stringWithString:@"Morgue Gallery\n==============\n\n"];
+
+	if (!entries.count)
+	{
+		[report appendString:@"No dead or retired runs were found in scores.raw yet.\n"];
+		return report;
+	}
+
+	for (NSDictionary<NSString *, NSString *> *entry in entries)
+	{
+		[report appendFormat:@"%@ - %@ points\n", entry[@"who"], entry[@"score"]];
+		[report appendFormat:@"  Cause: %@\n", entry[@"how"]];
+		[report appendFormat:@"  Level/depth: %@ / %@ (max %@ / %@)\n",
+		 entry[@"level"], entry[@"depth"], entry[@"maxLevel"], entry[@"maxDepth"]];
+		[report appendFormat:@"  Turns: %@    Date: %@    Source: %@\n\n",
+		 entry[@"turns"], entry[@"day"], entry[@"source"]];
+	}
+
+	return report;
+}
+
+static NSString *ZBObjectName(const object_type *o_ptr)
+{
+	if (!o_ptr || !o_ptr->k_idx) return nil;
+
+	char name[256];
+	object_desc(name, o_ptr, TRUE, 3, sizeof(name));
+	fmt_clean(name);
+	return ZBStringFromBytes(name, strlen(name));
+}
+
+static NSString *ZBInventoryReport(void)
+{
+	if (!p_ptr || (!p_ptr->state.playing && !character_dungeon)) return @"No active inventory.";
+
+	NSMutableString *report = [NSMutableString stringWithString:@"Inventory\n---------\n"];
+	int index = 0;
+	object_type *o_ptr = NULL;
+
+	OBJ_ITT_START(p_ptr->inventory, o_ptr)
+	{
+		NSString *name = ZBObjectName(o_ptr) ?: @"Unknown item";
+		[report appendFormat:@"%c) %@\n", I2A(index), name];
+		index++;
+	}
+	OBJ_ITT_END;
+
+	if (!index) [report appendString:@"Pack is empty."];
+	return report;
+}
+
+static NSString *ZBEquipmentReport(void)
+{
+	if (!p_ptr || (!p_ptr->state.playing && !character_dungeon)) return @"No active equipment.";
+
+	static const char *slotNames[EQUIP_MAX] = {
+		"Wield", "Bow", "Left hand", "Right hand", "Neck", "Light",
+		"Body", "Outer", "Arm", "Head", "Hands", "Feet"
+	};
+
+	NSMutableString *report = [NSMutableString stringWithString:@"Equipment\n---------\n"];
+
+	for (int i = 0; i < EQUIP_MAX; i++)
+	{
+		NSString *name = ZBObjectName(&p_ptr->equipment[i]) ?: @"(empty)";
+		[report appendFormat:@"%c) %-10s %@\n", I2A(i), slotNames[i], name];
+	}
+
+	return report;
+}
+
 @interface ZBCocoaTermView : NSView <NSMenuItemValidation>
+@property (nonatomic, assign, getter=isTileMode) BOOL tileMode;
 - (void)enqueueKey:(int)key;
 @end
 
@@ -70,6 +446,7 @@ static void cocoa_enqueue_key(int key);
 	CGFloat _contentX;
 	CGFloat _contentY;
 	NSArray<NSColor *> *_colors;
+	BOOL _tileMode;
 }
 
 - (instancetype)initWithFrame:(NSRect)frame {
@@ -135,6 +512,49 @@ static void cocoa_enqueue_key(int key);
 	return _colors[MIN((NSUInteger)(a % 16), _colors.count - 1)];
 }
 
+- (NSColor *)tileColorForCharacter:(char)c attr:(byte)a {
+	(void)a;
+
+	switch (c)
+	{
+		case '.': return [NSColor colorWithCalibratedRed:0.12 green:0.13 blue:0.12 alpha:1.0];
+		case ',': return [NSColor colorWithCalibratedRed:0.10 green:0.18 blue:0.10 alpha:1.0];
+		case ':': return [NSColor colorWithCalibratedRed:0.18 green:0.16 blue:0.12 alpha:1.0];
+		case ';': return [NSColor colorWithCalibratedRed:0.10 green:0.18 blue:0.15 alpha:1.0];
+		case '#': return [NSColor colorWithCalibratedRed:0.23 green:0.24 blue:0.23 alpha:1.0];
+		case '%': return [NSColor colorWithCalibratedRed:0.06 green:0.23 blue:0.09 alpha:1.0];
+		case '~': return [NSColor colorWithCalibratedRed:0.06 green:0.16 blue:0.28 alpha:1.0];
+		case '+': return [NSColor colorWithCalibratedRed:0.30 green:0.20 blue:0.11 alpha:1.0];
+		case '<':
+		case '>': return [NSColor colorWithCalibratedRed:0.20 green:0.16 blue:0.30 alpha:1.0];
+		case '*': return [NSColor colorWithCalibratedRed:0.36 green:0.30 blue:0.08 alpha:1.0];
+		case '$': return [NSColor colorWithCalibratedRed:0.27 green:0.24 blue:0.07 alpha:1.0];
+		default: break;
+	}
+
+	if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))
+	{
+		return [NSColor colorWithCalibratedRed:0.22 green:0.08 blue:0.08 alpha:1.0];
+	}
+
+	return nil;
+}
+
+- (void)setTileMode:(BOOL)tileMode {
+	if (_tileMode == tileMode) return;
+	_tileMode = tileMode;
+	[self setNeedsDisplay:YES];
+}
+
+- (BOOL)isTileMode {
+	return _tileMode;
+}
+
+- (IBAction)toggleTileMode:(id)sender {
+	(void)sender;
+	self.tileMode = !self.tileMode;
+}
+
 - (void)drawRect:(NSRect)dirtyRect {
 	(void)dirtyRect;
 	[self recalculateOrigin];
@@ -150,6 +570,26 @@ static void cocoa_enqueue_key(int key);
 	NSMutableDictionary<NSAttributedStringKey, id> *attrs = [@{ NSFontAttributeName: _font } mutableCopy];
 
 	pthread_mutex_lock(&screen_lock);
+	if (_tileMode)
+	{
+		for (int y = 0; y < COCOA_ROWS; y++)
+		{
+			for (int x = 0; x < COCOA_COLS; x++)
+			{
+				char c = screen_cells[y][x].c ? screen_cells[y][x].c : ' ';
+				NSColor *tileColor = [self tileColorForCharacter:c attr:screen_cells[y][x].a];
+				if (!tileColor) continue;
+
+				NSRect cellRect = NSMakeRect(_contentX + (CGFloat)x * _cellWidth,
+				                             _contentY + (CGFloat)y * _cellHeight,
+				                             _cellWidth,
+				                             _cellHeight);
+				[tileColor setFill];
+				NSRectFill(NSInsetRect(cellRect, 1.0, 1.0));
+			}
+		}
+	}
+
 	for (int y = 0; y < COCOA_ROWS; y++)
 	{
 		int x = 0;
@@ -269,6 +709,11 @@ static void cocoa_enqueue_key(int key);
 	{
 		return [NSPasteboard.generalPasteboard canReadItemWithDataConformingToTypes:@[NSPasteboardTypeString]];
 	}
+	if (menuItem.action == @selector(toggleTileMode:))
+	{
+		menuItem.state = self.tileMode ? NSControlStateValueOn : NSControlStateValueOff;
+		return YES;
+	}
 
 	return YES;
 }
@@ -306,6 +751,167 @@ static void cocoa_enqueue_key(int key);
 
 @end
 
+@interface ZBCocoaInspectorView : NSView
+- (void)refreshFromGame;
+@end
+
+@implementation ZBCocoaInspectorView {
+	NSTabView *_tabView;
+	NSTextView *_messagesView;
+	NSTextView *_inventoryView;
+	NSTextView *_equipmentView;
+	NSTextView *_recallView;
+	NSTextView *_terrainView;
+}
+
+- (instancetype)initWithFrame:(NSRect)frame {
+	self = [super initWithFrame:frame];
+	if (!self) return nil;
+
+	self.wantsLayer = YES;
+	self.layer.backgroundColor = [NSColor colorWithCalibratedRed:0.055 green:0.060 blue:0.056 alpha:1.0].CGColor;
+
+	_tabView = [[NSTabView alloc] initWithFrame:NSInsetRect(self.bounds, 8.0, 8.0)];
+	_tabView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+	[self addSubview:_tabView];
+
+	_messagesView = [self addTextTab:@"Messages"];
+	_inventoryView = [self addTextTab:@"Inventory"];
+	_equipmentView = [self addTextTab:@"Equipment"];
+	_recallView = [self addTextTab:@"Recall"];
+	_terrainView = [self addTextTab:@"Terrain"];
+
+	[self refreshFromGame];
+	return self;
+}
+
+- (NSTextView *)addTextTab:(NSString *)label {
+	NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:_tabView.bounds];
+	scrollView.borderType = NSNoBorder;
+	scrollView.hasVerticalScroller = YES;
+	scrollView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+
+	NSTextView *textView = [[NSTextView alloc] initWithFrame:scrollView.bounds];
+	textView.editable = NO;
+	textView.selectable = YES;
+	textView.drawsBackground = YES;
+	textView.backgroundColor = [NSColor colorWithCalibratedRed:0.035 green:0.038 blue:0.035 alpha:1.0];
+	textView.textColor = [NSColor colorWithCalibratedRed:0.78 green:0.82 blue:0.76 alpha:1.0];
+	textView.font = [NSFont monospacedSystemFontOfSize:12.0 weight:NSFontWeightRegular];
+	textView.textContainerInset = NSMakeSize(10.0, 10.0);
+	textView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+	scrollView.documentView = textView;
+
+	NSTabViewItem *item = [[NSTabViewItem alloc] initWithIdentifier:label];
+	item.label = label;
+	item.view = scrollView;
+	[_tabView addTabViewItem:item];
+
+	return textView;
+}
+
+- (NSString *)messageHistoryText {
+	NSArray<NSString *> *history = nil;
+
+	pthread_mutex_lock(&screen_lock);
+	history = [message_history copy] ?: @[];
+	pthread_mutex_unlock(&screen_lock);
+
+	if (!history.count) return @"No messages captured yet.";
+	return [history componentsJoinedByString:@"\n"];
+}
+
+- (NSString *)screenSectionWithNeedles:(NSArray<NSString *> *)needles emptyTitle:(NSString *)emptyTitle {
+	NSArray<NSString *> *rows = cocoa_snapshot_rows();
+	NSMutableArray<NSString *> *matches = [NSMutableArray array];
+
+	for (NSString *row in rows)
+	{
+		if (!row.length) continue;
+		for (NSString *needle in needles)
+		{
+			if ([row rangeOfString:needle options:NSCaseInsensitiveSearch].location != NSNotFound)
+			{
+				[matches addObject:row];
+				break;
+			}
+		}
+	}
+
+	if (matches.count) return [matches componentsJoinedByString:@"\n"];
+
+	return [NSString stringWithFormat:@"%@\n\nCurrent screen\n--------------\n%@",
+	        emptyTitle, ZBJoinedVisibleScreen()];
+}
+
+- (NSString *)terrainText {
+	NSArray<NSString *> *rows = cocoa_snapshot_rows();
+	NSMutableDictionary<NSString *, NSNumber *> *counts = [NSMutableDictionary dictionary];
+
+	void (^increment)(NSString *) = ^(NSString *key) {
+		counts[key] = @((counts[key] ?: @0).integerValue + 1);
+	};
+
+	for (NSString *row in rows)
+	{
+		for (NSUInteger i = 0; i < row.length; i++)
+		{
+			switch ([row characterAtIndex:i])
+			{
+				case '.': increment(@"Floor ."); break;
+				case ',': increment(@"Grass ,"); break;
+				case ':': increment(@"Rubble :"); break;
+				case ';': increment(@"Brush ;"); break;
+				case '#': increment(@"Wall #"); break;
+				case '%': increment(@"Tree %"); break;
+				case '~': increment(@"Water ~"); break;
+				case '+': increment(@"Door +"); break;
+				case '<': increment(@"Stairs <"); break;
+				case '>': increment(@"Stairs >"); break;
+				case '*': increment(@"Treasure *"); break;
+				case '$': increment(@"Gold $"); break;
+				default: break;
+			}
+		}
+	}
+
+	NSMutableString *text = [NSMutableString stringWithString:@"Visible Terrain\n---------------\n"];
+	NSArray<NSString *> *keys = [[counts allKeys] sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
+	if (!keys.count)
+	{
+		[text appendString:@"No terrain glyphs visible on the current screen."];
+	}
+	else
+	{
+		for (NSString *key in keys)
+		{
+			[text appendFormat:@"%@: %@\n", key, counts[key]];
+		}
+	}
+
+	[text appendFormat:@"\nCurrent screen\n--------------\n%@", ZBJoinedVisibleScreen()];
+	return text;
+}
+
+- (void)refreshFromGame {
+	if (!NSThread.isMainThread)
+	{
+		dispatch_async(dispatch_get_main_queue(), ^{
+			[self refreshFromGame];
+		});
+		return;
+	}
+
+	_messagesView.string = [self messageHistoryText];
+	_inventoryView.string = ZBInventoryReport();
+	_equipmentView.string = ZBEquipmentReport();
+	_recallView.string = [self screenSectionWithNeedles:@[@"Recall", @"This monster", @"Kills", @"Speed", @"Armor", @"Experience"]
+	                                          emptyTitle:@"No monster recall text visible."];
+	_terrainView.string = [self terrainText];
+}
+
+@end
+
 static void cocoa_enqueue_key(int key)
 {
 	if (!key) return;
@@ -337,6 +943,7 @@ static void cocoa_queue_redraw(void)
 		redraw_queued = FALSE;
 		pthread_mutex_unlock(&screen_lock);
 		[cocoa_view setNeedsDisplay:YES];
+		[cocoa_inspector refreshFromGame];
 	});
 }
 
@@ -396,12 +1003,30 @@ static errr Term_text_cocoa(int x, int y, int n, byte a, cptr s)
 	if (x + n > COCOA_COLS) n = COCOA_COLS - x;
 	if (n <= 0) return 0;
 
+	NSString *messageLine = nil;
+	if (y == 0)
+	{
+		messageLine = ZBTrim(ZBStringFromBytes(s, (NSUInteger)n));
+	}
+
 	pthread_mutex_lock(&screen_lock);
 	for (int i = 0; i < n; i++)
 	{
 		screen_cells[y][x + i].c = s[i];
 		screen_cells[y][x + i].a = a;
 		screen_cells[y][x + i].dirty = TRUE;
+	}
+	if (messageLine.length)
+	{
+		if (!message_history) message_history = [NSMutableArray arrayWithCapacity:COCOA_MESSAGE_LIMIT];
+		if (![message_history.lastObject isEqualToString:messageLine])
+		{
+			[message_history addObject:messageLine];
+			while (message_history.count > COCOA_MESSAGE_LIMIT)
+			{
+				[message_history removeObjectAtIndex:0];
+			}
+		}
 	}
 	pthread_mutex_unlock(&screen_lock);
 	cocoa_queue_redraw();
@@ -491,11 +1116,22 @@ errr init_cocoa(int argc, char **argv, unsigned char *new_game)
 	return 0;
 }
 
-@interface ZBCocoaAppDelegate : NSObject <NSApplicationDelegate>
+@interface ZBCocoaAppDelegate : NSObject <NSApplicationDelegate, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSSplitViewDelegate, NSMenuItemValidation>
 @end
 
 @implementation ZBCocoaAppDelegate {
 	NSWindow *_window;
+	NSSplitView *_splitView;
+	BOOL _inspectorVisible;
+	NSPanel *_commandPanel;
+	NSSearchField *_commandSearch;
+	NSTableView *_commandTable;
+	NSArray<NSDictionary<NSString *, id> *> *_commands;
+	NSArray<NSDictionary<NSString *, id> *> *_filteredCommands;
+	NSWindow *_saveManagerWindow;
+	NSTextView *_saveManagerTextView;
+	NSWindow *_morgueWindow;
+	NSTextView *_morgueTextView;
 	BOOL _allowTerminate;
 	BOOL _isRelaunching;
 	BOOL _launchNewGame;
@@ -529,6 +1165,298 @@ errr init_cocoa(int argc, char **argv, unsigned char *new_game)
 	return target;
 }
 
+- (NSDictionary<NSString *, id> *)commandWithName:(NSString *)name key:(NSString *)key sequence:(NSString *)sequence detail:(NSString *)detail {
+	return @{ @"name": name, @"key": key, @"sequence": sequence, @"detail": detail };
+}
+
+- (NSArray<NSDictionary<NSString *, id> *> *)commands {
+	if (_commands) return _commands;
+
+	_commands = @[
+		[self commandWithName:@"Move north" key:@"8 / Up" sequence:ZBKeyString('8') detail:@"Walk or attack north"],
+		[self commandWithName:@"Move south" key:@"2 / Down" sequence:ZBKeyString('2') detail:@"Walk or attack south"],
+		[self commandWithName:@"Move west" key:@"4 / Left" sequence:ZBKeyString('4') detail:@"Walk or attack west"],
+		[self commandWithName:@"Move east" key:@"6 / Right" sequence:ZBKeyString('6') detail:@"Walk or attack east"],
+		[self commandWithName:@"Move northwest" key:@"7" sequence:ZBKeyString('7') detail:@"Walk or attack northwest"],
+		[self commandWithName:@"Move northeast" key:@"9" sequence:ZBKeyString('9') detail:@"Walk or attack northeast"],
+		[self commandWithName:@"Move southwest" key:@"1" sequence:ZBKeyString('1') detail:@"Walk or attack southwest"],
+		[self commandWithName:@"Move southeast" key:@"3" sequence:ZBKeyString('3') detail:@"Walk or attack southeast"],
+		[self commandWithName:@"Wait" key:@"5" sequence:ZBKeyString('5') detail:@"Spend one turn in place"],
+		[self commandWithName:@"Get item" key:@"g" sequence:ZBKeyString('g') detail:@"Pick up an item"],
+		[self commandWithName:@"Inventory" key:@"i" sequence:ZBKeyString('i') detail:@"Open inventory"],
+		[self commandWithName:@"Equipment" key:@"e" sequence:ZBKeyString('e') detail:@"Open equipment"],
+		[self commandWithName:@"Look" key:@"l" sequence:ZBKeyString('l') detail:@"Inspect visible terrain or monsters"],
+		[self commandWithName:@"Open door" key:@"o" sequence:ZBKeyString('o') detail:@"Open a nearby door or chest"],
+		[self commandWithName:@"Close door" key:@"c" sequence:ZBKeyString('c') detail:@"Close a nearby door"],
+		[self commandWithName:@"Rest" key:@"R" sequence:ZBKeyString('R') detail:@"Rest for a chosen duration"],
+		[self commandWithName:@"Search" key:@"s" sequence:ZBKeyString('s') detail:@"Search nearby squares"],
+		[self commandWithName:@"Ascend stairs" key:@"<" sequence:ZBKeyString('<') detail:@"Use upstairs"],
+		[self commandWithName:@"Descend stairs" key:@">" sequence:ZBKeyString('>') detail:@"Use downstairs"],
+		[self commandWithName:@"Fire missile" key:@"f" sequence:ZBKeyString('f') detail:@"Fire a ranged weapon"],
+		[self commandWithName:@"Throw item" key:@"v" sequence:ZBKeyString('v') detail:@"Throw an item"],
+		[self commandWithName:@"Zap wand" key:@"a" sequence:ZBKeyString('a') detail:@"Aim a wand"],
+		[self commandWithName:@"Use staff" key:@"u" sequence:ZBKeyString('u') detail:@"Use a staff"],
+		[self commandWithName:@"Read scroll" key:@"r" sequence:ZBKeyString('r') detail:@"Read a scroll"],
+		[self commandWithName:@"Cast spell" key:@"m" sequence:ZBKeyString('m') detail:@"Cast or browse magic"],
+		[self commandWithName:@"Repeat command" key:@"n" sequence:ZBKeyString('n') detail:@"Repeat the previous command"],
+		[self commandWithName:@"Messages" key:@"Ctrl-P" sequence:ZBKeyString(COCOA_CTRL('P')) detail:@"Show message history"],
+		[self commandWithName:@"Redraw" key:@"Ctrl-R" sequence:ZBKeyString(COCOA_CTRL('R')) detail:@"Refresh the game display"],
+		[self commandWithName:@"Save" key:@"Ctrl-S" sequence:ZBKeyString(COCOA_CTRL('S')) detail:@"Save without quitting"],
+		[self commandWithName:@"Save and quit" key:@"Ctrl-X" sequence:ZBKeyString(COCOA_CTRL('X')) detail:@"Save and exit"],
+		[self commandWithName:@"Help" key:@"?" sequence:ZBKeyString('?') detail:@"Open Zangband help"],
+		[self commandWithName:@"Escape" key:@"Esc" sequence:ZBKeyString(ESCAPE) detail:@"Cancel or back out"]
+	];
+
+	return _commands;
+}
+
+- (void)sendKeySequence:(NSString *)sequence {
+	for (NSUInteger i = 0; i < sequence.length; i++)
+	{
+		[cocoa_view enqueueKey:(int)[sequence characterAtIndex:i]];
+	}
+	[_window makeFirstResponder:cocoa_view];
+}
+
+- (void)filterCommands {
+	NSString *query = ZBTrim(_commandSearch.stringValue ?: @"");
+	NSMutableArray<NSDictionary<NSString *, id> *> *filtered = [NSMutableArray array];
+
+	for (NSDictionary<NSString *, id> *command in self.commands)
+	{
+		NSString *haystack = [NSString stringWithFormat:@"%@ %@ %@",
+		                      command[@"name"], command[@"key"], command[@"detail"]];
+		if (!query.length || [haystack rangeOfString:query options:NSCaseInsensitiveSearch].location != NSNotFound)
+		{
+			[filtered addObject:command];
+		}
+	}
+
+	_filteredCommands = filtered;
+	[_commandTable reloadData];
+	if (_filteredCommands.count) [_commandTable selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+}
+
+- (void)buildCommandPanel {
+	NSRect frame = NSMakeRect(0, 0, 640, 420);
+	_commandPanel = [[NSPanel alloc] initWithContentRect:frame
+	                                           styleMask:(NSWindowStyleMaskTitled |
+	                                                      NSWindowStyleMaskClosable |
+	                                                      NSWindowStyleMaskUtilityWindow)
+	                                             backing:NSBackingStoreBuffered
+	                                               defer:NO];
+	_commandPanel.title = @"Command Palette";
+
+	NSView *content = [[NSView alloc] initWithFrame:frame];
+	_commandPanel.contentView = content;
+
+	_commandSearch = [[NSSearchField alloc] initWithFrame:NSMakeRect(16, NSHeight(frame) - 48, NSWidth(frame) - 32, 28)];
+	_commandSearch.placeholderString = @"Search commands";
+	_commandSearch.delegate = self;
+	_commandSearch.target = self;
+	_commandSearch.action = @selector(sendSelectedCommand:);
+	[content addSubview:_commandSearch];
+
+	NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(16, 56, NSWidth(frame) - 32, NSHeight(frame) - 116)];
+	scrollView.hasVerticalScroller = YES;
+	scrollView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+
+	_commandTable = [[NSTableView alloc] initWithFrame:scrollView.bounds];
+	_commandTable.delegate = self;
+	_commandTable.dataSource = self;
+	_commandTable.doubleAction = @selector(sendSelectedCommand:);
+	_commandTable.target = self;
+	_commandTable.usesAlternatingRowBackgroundColors = YES;
+	_commandTable.headerView = nil;
+
+	NSTableColumn *nameColumn = [[NSTableColumn alloc] initWithIdentifier:@"name"];
+	nameColumn.title = @"Command";
+	nameColumn.width = 240;
+	[_commandTable addTableColumn:nameColumn];
+
+	NSTableColumn *keyColumn = [[NSTableColumn alloc] initWithIdentifier:@"key"];
+	keyColumn.title = @"Key";
+	keyColumn.width = 90;
+	[_commandTable addTableColumn:keyColumn];
+
+	NSTableColumn *detailColumn = [[NSTableColumn alloc] initWithIdentifier:@"detail"];
+	detailColumn.title = @"Detail";
+	detailColumn.width = 260;
+	[_commandTable addTableColumn:detailColumn];
+
+	scrollView.documentView = _commandTable;
+	[content addSubview:scrollView];
+
+	NSButton *sendButton = [[NSButton alloc] initWithFrame:NSMakeRect(NSWidth(frame) - 108, 16, 92, 28)];
+	sendButton.title = @"Send";
+	sendButton.bezelStyle = NSBezelStyleRounded;
+	sendButton.target = self;
+	sendButton.action = @selector(sendSelectedCommand:);
+	sendButton.autoresizingMask = NSViewMinXMargin | NSViewMaxYMargin;
+	[content addSubview:sendButton];
+}
+
+- (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView {
+	(void)tableView;
+	return (NSInteger)_filteredCommands.count;
+}
+
+- (id)tableView:(NSTableView *)tableView objectValueForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row {
+	(void)tableView;
+	if (row < 0 || row >= (NSInteger)_filteredCommands.count) return @"";
+	return _filteredCommands[(NSUInteger)row][tableColumn.identifier] ?: @"";
+}
+
+- (void)controlTextDidChange:(NSNotification *)notification {
+	if (notification.object == _commandSearch) [self filterCommands];
+}
+
+- (IBAction)showCommandPalette:(id)sender {
+	(void)sender;
+	if (!_commandPanel) [self buildCommandPanel];
+	[self filterCommands];
+	[_commandPanel center];
+	[_commandPanel makeKeyAndOrderFront:nil];
+	[_commandSearch becomeFirstResponder];
+}
+
+- (IBAction)sendSelectedCommand:(id)sender {
+	(void)sender;
+	NSInteger row = _commandTable.selectedRow;
+	if (row < 0 && _filteredCommands.count) row = 0;
+	if (row < 0 || row >= (NSInteger)_filteredCommands.count) return;
+
+	NSDictionary<NSString *, id> *command = _filteredCommands[(NSUInteger)row];
+	[self sendKeySequence:command[@"sequence"]];
+	[_commandPanel orderOut:nil];
+}
+
+- (NSTextView *)textViewForReportWindow:(NSWindow * __strong *)window title:(NSString *)title frame:(NSRect)frame {
+	if (*window)
+	{
+		NSScrollView *scrollView = (NSScrollView *)(*window).contentView;
+		return (NSTextView *)scrollView.documentView;
+	}
+
+	*window = [[NSWindow alloc] initWithContentRect:frame
+	                                      styleMask:(NSWindowStyleMaskTitled |
+	                                                 NSWindowStyleMaskClosable |
+	                                                 NSWindowStyleMaskResizable)
+	                                        backing:NSBackingStoreBuffered
+	                                          defer:NO];
+	(*window).title = title;
+
+	NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:frame];
+	scrollView.hasVerticalScroller = YES;
+	scrollView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+
+	NSTextView *textView = [[NSTextView alloc] initWithFrame:frame];
+	textView.editable = NO;
+	textView.selectable = YES;
+	textView.font = [NSFont monospacedSystemFontOfSize:12.0 weight:NSFontWeightRegular];
+	textView.textContainerInset = NSMakeSize(12.0, 12.0);
+	scrollView.documentView = textView;
+	(*window).contentView = scrollView;
+
+	return textView;
+}
+
+- (IBAction)showSaveManager:(id)sender {
+	(void)sender;
+	NSRect frame = NSMakeRect(0, 0, 760, 520);
+	_saveManagerTextView = [self textViewForReportWindow:&_saveManagerWindow title:@"Save Manager" frame:frame];
+	_saveManagerTextView.string = ZBSaveManagerReport();
+	[_saveManagerWindow center];
+	[_saveManagerWindow makeKeyAndOrderFront:nil];
+}
+
+- (IBAction)showMorgueGallery:(id)sender {
+	(void)sender;
+	NSRect frame = NSMakeRect(0, 0, 760, 520);
+	_morgueTextView = [self textViewForReportWindow:&_morgueWindow title:@"Morgue Gallery" frame:frame];
+	_morgueTextView.string = ZBMorgueReport();
+	[_morgueWindow center];
+	[_morgueWindow makeKeyAndOrderFront:nil];
+}
+
+- (IBAction)copyMorgueSummary:(id)sender {
+	(void)sender;
+	NSString *summary = _morgueTextView.string.length ? _morgueTextView.string : ZBMorgueReport();
+	[NSPasteboard.generalPasteboard clearContents];
+	[NSPasteboard.generalPasteboard setString:summary forType:NSPasteboardTypeString];
+}
+
+- (IBAction)toggleInspector:(id)sender {
+	(void)sender;
+	_inspectorVisible = !_inspectorVisible;
+	cocoa_inspector.hidden = !_inspectorVisible;
+	[self splitView:_splitView resizeSubviewsWithOldSize:_splitView.bounds.size];
+	[_window makeFirstResponder:cocoa_view];
+}
+
+- (IBAction)toggleTileMode:(id)sender {
+	(void)sender;
+	cocoa_view.tileMode = !cocoa_view.tileMode;
+	[_window makeFirstResponder:cocoa_view];
+}
+
+- (CGFloat)splitView:(NSSplitView *)splitView constrainMinCoordinate:(CGFloat)proposedMinimumPosition ofSubviewAt:(NSInteger)dividerIndex {
+	(void)splitView;
+	(void)dividerIndex;
+	return MAX(proposedMinimumPosition, 620.0);
+}
+
+- (CGFloat)splitView:(NSSplitView *)splitView constrainMaxCoordinate:(CGFloat)proposedMaximumPosition ofSubviewAt:(NSInteger)dividerIndex {
+	(void)dividerIndex;
+	if (!_inspectorVisible) return proposedMaximumPosition;
+	return MIN(proposedMaximumPosition, NSWidth(splitView.bounds) - 260.0);
+}
+
+- (BOOL)splitView:(NSSplitView *)splitView canCollapseSubview:(NSView *)subview {
+	(void)splitView;
+	return subview == cocoa_inspector;
+}
+
+- (void)splitView:(NSSplitView *)splitView resizeSubviewsWithOldSize:(NSSize)oldSize {
+	(void)oldSize;
+	NSRect bounds = splitView.bounds;
+	CGFloat divider = splitView.dividerThickness;
+	CGFloat width = NSWidth(bounds);
+	CGFloat height = NSHeight(bounds);
+
+	if (!_inspectorVisible)
+	{
+		cocoa_view.frame = bounds;
+		cocoa_inspector.frame = NSMakeRect(width, 0, 0, height);
+		return;
+	}
+
+	CGFloat inspectorWidth = MIN(COCOA_INSPECTOR_WIDTH, MAX(260.0, width - 620.0 - divider));
+	CGFloat terminalWidth = MAX(0.0, width - inspectorWidth - divider);
+
+	cocoa_view.frame = NSMakeRect(0, 0, terminalWidth, height);
+	cocoa_inspector.frame = NSMakeRect(terminalWidth + divider, 0, inspectorWidth, height);
+}
+
+- (BOOL)validateMenuItem:(NSMenuItem *)menuItem {
+	if (menuItem.action == @selector(toggleInspector:))
+	{
+		menuItem.state = _inspectorVisible ? NSControlStateValueOn : NSControlStateValueOff;
+		return YES;
+	}
+	if (menuItem.action == @selector(toggleTileMode:))
+	{
+		menuItem.state = cocoa_view.tileMode ? NSControlStateValueOn : NSControlStateValueOff;
+		return YES;
+	}
+	if (menuItem.action == @selector(copyMorgueSummary:))
+	{
+		return YES;
+	}
+
+	return YES;
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
 	(void)notification;
 	_launchNewGame = [NSProcessInfo.processInfo.arguments containsObject:@"--new-game"];
@@ -543,10 +1471,29 @@ errr init_cocoa(int argc, char **argv, unsigned char *new_game)
 	                                          defer:NO];
 	_window.title = @"Zangband Native";
 	_window.minSize = NSMakeSize(860, 560);
-	cocoa_view = [[ZBCocoaTermView alloc] initWithFrame:frame];
-	_window.contentView = cocoa_view;
+
+	_splitView = [[NSSplitView alloc] initWithFrame:frame];
+	_splitView.vertical = YES;
+	_splitView.dividerStyle = NSSplitViewDividerStyleThin;
+	_splitView.delegate = self;
+	_splitView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+
+	NSRect terminalFrame = NSMakeRect(0, 0, NSWidth(frame) - COCOA_INSPECTOR_WIDTH, NSHeight(frame));
+	cocoa_view = [[ZBCocoaTermView alloc] initWithFrame:terminalFrame];
+	cocoa_view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+	[_splitView addSubview:cocoa_view];
+
+	NSRect inspectorFrame = NSMakeRect(NSWidth(frame) - COCOA_INSPECTOR_WIDTH, 0, COCOA_INSPECTOR_WIDTH, NSHeight(frame));
+	cocoa_inspector = [[ZBCocoaInspectorView alloc] initWithFrame:inspectorFrame];
+	cocoa_inspector.autoresizingMask = NSViewHeightSizable;
+	[_splitView addSubview:cocoa_inspector];
+
+	_inspectorVisible = YES;
+	_window.contentView = _splitView;
+	[self splitView:_splitView resizeSubviewsWithOldSize:frame.size];
 	[_window center];
 	[_window makeKeyAndOrderFront:nil];
+	[_window makeFirstResponder:cocoa_view];
 	[NSApp activateIgnoringOtherApps:YES];
 
 	NSURL *supportURL = [self applicationSupportURL];
@@ -660,6 +1607,10 @@ static void ZBCocoaInstallMainMenu(void)
 	NSMenuItem *saveAndQuitItem = [[NSMenuItem alloc] initWithTitle:@"Save and Quit" action:@selector(saveAndQuit:) keyEquivalent:@"s"];
 	saveAndQuitItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
 	[fileMenu addItem:saveAndQuitItem];
+	[fileMenu addItem:[NSMenuItem separatorItem]];
+	[fileMenu addItem:[[NSMenuItem alloc] initWithTitle:@"Save Manager" action:@selector(showSaveManager:) keyEquivalent:@""]];
+	[fileMenu addItem:[[NSMenuItem alloc] initWithTitle:@"Morgue Gallery" action:@selector(showMorgueGallery:) keyEquivalent:@""]];
+	[fileMenu addItem:[[NSMenuItem alloc] initWithTitle:@"Copy Morgue Summary" action:@selector(copyMorgueSummary:) keyEquivalent:@""]];
 	fileItem.submenu = fileMenu;
 
 	NSMenuItem *editItem = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];
@@ -668,6 +1619,29 @@ static void ZBCocoaInstallMainMenu(void)
 	NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
 	[editMenu addItem:[[NSMenuItem alloc] initWithTitle:@"Paste" action:@selector(paste:) keyEquivalent:@"v"]];
 	editItem.submenu = editMenu;
+
+	NSMenuItem *viewItem = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];
+	[mainMenu addItem:viewItem];
+
+	NSMenu *viewMenu = [[NSMenu alloc] initWithTitle:@"View"];
+	NSMenuItem *inspectorItem = [[NSMenuItem alloc] initWithTitle:@"Side Inspector" action:@selector(toggleInspector:) keyEquivalent:@"i"];
+	inspectorItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
+	[viewMenu addItem:inspectorItem];
+	NSMenuItem *tileItem = [[NSMenuItem alloc] initWithTitle:@"Tile Mode" action:@selector(toggleTileMode:) keyEquivalent:@"t"];
+	tileItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
+	[viewMenu addItem:tileItem];
+	[viewMenu addItem:[NSMenuItem separatorItem]];
+	[viewMenu addItem:[[NSMenuItem alloc] initWithTitle:@"Enter Full Screen" action:@selector(toggleFullScreen:) keyEquivalent:@"f"]];
+	viewItem.submenu = viewMenu;
+
+	NSMenuItem *commandItem = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];
+	[mainMenu addItem:commandItem];
+
+	NSMenu *commandMenu = [[NSMenu alloc] initWithTitle:@"Commands"];
+	NSMenuItem *paletteItem = [[NSMenuItem alloc] initWithTitle:@"Command Palette" action:@selector(showCommandPalette:) keyEquivalent:@"p"];
+	paletteItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+	[commandMenu addItem:paletteItem];
+	commandItem.submenu = commandMenu;
 
 	NSApp.mainMenu = mainMenu;
 }

@@ -5,20 +5,20 @@ keeping deterministic gameplay intact.
 
 ## Native App Polish
 
-- Add a first-run save manager showing active character, last played time, depth,
-  level, and death status.
-- Add a native morgue gallery for dead characters with sortable cause of death,
-  score, class, race, and deepest level.
-- Add a command palette that searches commands by name and shows the original
-  keybinding before sending it to the game.
-- Add a side inspector for message history, inventory, equipment, monster recall,
-  and visible terrain details.
+- Shipped in the native backend: save manager showing active character, last
+  played time, depth, level, and death status.
+- Shipped in the native backend: morgue gallery for dead characters using
+  `scores.raw`, with copyable run summaries.
+- Shipped in the native backend: command palette that searches commands by name
+  and sends the original keybinding.
+- Shipped in the native backend: side inspector for message history, inventory,
+  equipment, monster recall, and visible terrain details.
 - Add iCloud/Dropbox-friendly save export and import without hiding the original
   save files.
 - Add native preferences for font, palette, key mode, window scale, and terrain
   contrast.
-- Add optional tile rendering as a view mode, while keeping ASCII as the primary
-  mode.
+- Shipped in the native backend: optional tile rendering as a view mode, while
+  keeping ASCII as the primary mode.
 - Add crash-safe autosave snapshots and a "restore previous turn" debug-only
   recovery tool for development builds.
 

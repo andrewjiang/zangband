@@ -68,10 +68,21 @@ make -C macos native
 open macos/build/ZangbandNative.app
 ```
 
-This removes the pseudo-terminal/curses layer for that target. It is a branch
-starting point for the real Mac port; the release artifact still uses the stable
-wrapper app until the native backend has complete input, save, restart, and
-gameplay QA.
+This removes the pseudo-terminal/curses layer for that target. The native target
+now includes Mac-facing gameplay surfaces on top of the direct `z-term` renderer:
+
+- File > Save Manager shows the active character, level, depth, status, save
+  files, and last played timestamps.
+- File > Morgue Gallery reads `scores.raw` and builds shareable run summaries.
+- Commands > Command Palette searches common commands and sends the original
+  Zangband keybinding.
+- View > Side Inspector shows message history, screen-derived inventory,
+  equipment, monster recall, and visible terrain details.
+- View > Tile Mode adds an optional terrain/object color layer while preserving
+  ASCII glyphs as the primary display.
+
+The stable release artifact can still use the wrapper app while the native
+backend finishes broader gameplay QA.
 
 ## Runtime Data
 
@@ -83,6 +94,8 @@ On first launch, the bundled `lib` directory is copied to:
 
 The game runs with `ANGBAND_PATH` pointed at that writable copy, so save files,
 scores, and generated data do not need to be written inside the app bundle.
+The direct native target uses `~/Library/Application Support/ZangbandNative/lib`
+so it can be tested side-by-side with the wrapper app.
 
 ## App Controls
 
@@ -90,7 +103,11 @@ The app provides native menu items for common Mac workflows:
 
 - File > New Game
 - File > Restart
-- View > Bigger Text
-- View > Smaller Text
-- View > Actual Size
+- File > Save
+- File > Save and Quit
+- File > Save Manager
+- File > Morgue Gallery
+- View > Side Inspector
+- View > Tile Mode
 - View > Enter Full Screen
+- Commands > Command Palette
