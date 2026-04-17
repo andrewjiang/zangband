@@ -146,6 +146,11 @@ extern errr init_gcu(void);
 extern cptr help_gcu[];
 #endif
 
+#ifdef USE_COCOA
+extern errr init_cocoa(int argc, char **argv, unsigned char *new_game);
+extern cptr help_cocoa[];
+#endif
+
 #ifdef USE_CAP
 extern errr init_cap(void);
 extern cptr help_cap[];

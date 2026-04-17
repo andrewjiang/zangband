@@ -7,7 +7,9 @@
 /config.status
 /conftest.dSYM/
 /zangband
+/dist/
 /macos/build/
+/macos/dist/
 /macos/*.dSYM/
 
 /src/*.o

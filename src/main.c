@@ -10,6 +10,24 @@
 
 #include "angband.h"
 
+#ifdef COCOA_ONLY
+# undef USE_GTK
+# undef USE_XAW
+# undef USE_X11
+# undef USE_XPJ
+# undef USE_TNB
+# undef USE_GCU
+# undef USE_CAP
+# undef USE_DOS
+# undef USE_IBM
+# undef USE_EMX
+# undef USE_SLA
+# undef USE_LSL
+# undef USE_AMI
+# undef USE_VME
+# undef USE_VCS
+#endif
+
 
 /*
  * Some machines have a "main()" function in their "main-xxx.c" file,
@@ -25,6 +43,10 @@
  */
 static const module_type modules[] =
 {
+#ifdef USE_COCOA
+	INIT_MODULE(cocoa),
+#endif /* USE_COCOA */
+
 #ifdef USE_GTK
 	INIT_MODULE(gtk),
 #endif /* USE_GTK */

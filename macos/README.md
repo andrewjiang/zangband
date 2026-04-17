@@ -42,6 +42,37 @@ To launch it:
 open macos/build/Zangband.app
 ```
 
+## Release Artifact
+
+From the repository root:
+
+```sh
+scripts/build-macos-release.sh
+```
+
+The script builds `macos/build/Zangband.app`, signs the embedded game binary and
+the app bundle, verifies the signature, then writes a zip and SHA-256 checksum
+under `dist/`.
+
+If no `CODESIGN_IDENTITY` is set, it uses ad-hoc signing (`codesign -s -`).
+Set `CODESIGN_IDENTITY` to a Developer ID Application certificate for a
+distributable signed build that can later be notarized.
+
+## Experimental Native Backend
+
+The native backend target links the game core directly into a Cocoa app and
+implements the Zangband `z-term` hooks in `src/main-cocoa.m`:
+
+```sh
+make -C macos native
+open macos/build/ZangbandNative.app
+```
+
+This removes the pseudo-terminal/curses layer for that target. It is a branch
+starting point for the real Mac port; the release artifact still uses the stable
+wrapper app until the native backend has complete input, save, restart, and
+gameplay QA.
+
 ## Runtime Data
 
 On first launch, the bundled `lib` directory is copied to:

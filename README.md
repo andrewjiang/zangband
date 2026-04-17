@@ -75,11 +75,38 @@ Then launch:
 open macos/build/Zangband.app
 ```
 
+To produce a signed zip release artifact:
+
+```sh
+scripts/build-macos-release.sh
+```
+
+Without a local Apple Developer certificate, the script uses ad-hoc signing.
+For a Developer ID build, set:
+
+```sh
+CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" scripts/build-macos-release.sh
+```
+
 For terminal play without the app:
 
 ```sh
 TERM=xterm-256color ANGBAND_PATH="$PWD/lib" ./zangband -mgcu
 ```
+
+## Native Cocoa Backend
+
+This branch includes the first experimental in-process Cocoa `z-term` backend:
+
+```sh
+make -C macos native
+open macos/build/ZangbandNative.app
+```
+
+That target links the Zangband game core directly into an AppKit process and
+draws cells from `z-term` hooks instead of parsing pseudo-terminal output. It is
+the start of the true native port, not the release target yet. The stable app
+remains `macos/build/Zangband.app`.
 
 ## macOS Runtime Data
 
