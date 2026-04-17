@@ -18,6 +18,7 @@
 #define COCOA_COLS 80
 #define COCOA_ROWS 24
 #define COCOA_KEY_QUEUE 1024
+#define COCOA_CTRL(c) ((c) & 0x1F)
 
 extern int zangband_game_main(int argc, char **argv);
 
@@ -54,8 +55,10 @@ static bool redraw_queued = FALSE;
 static ZBCocoaTermView *cocoa_view = nil;
 
 static void cocoa_queue_redraw(void);
+static void cocoa_enqueue_key(int key);
 
-@interface ZBCocoaTermView : NSView
+@interface ZBCocoaTermView : NSView <NSMenuItemValidation>
+- (void)enqueueKey:(int)key;
 @end
 
 @implementation ZBCocoaTermView {
@@ -185,6 +188,128 @@ static void cocoa_queue_redraw(void);
 }
 
 - (void)enqueueKey:(int)key {
+	cocoa_enqueue_key(key);
+}
+
+- (void)enqueueText:(NSString *)text {
+	for (NSUInteger i = 0; i < text.length; i++)
+	{
+		unichar ch = [text characterAtIndex:i];
+		if (ch == '\n')
+		{
+			[self enqueueKey:'\r'];
+		}
+		else if (ch == '\t')
+		{
+			[self enqueueKey:'\t'];
+		}
+		else if (ch >= 0x20 && ch < 0x7F)
+		{
+			[self enqueueKey:(int)ch];
+		}
+	}
+}
+
+- (BOOL)enqueueControlKeyFromEvent:(NSEvent *)event {
+	NSEventModifierFlags flags = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+	if (!(flags & NSEventModifierFlagControl)) return NO;
+	if (flags & NSEventModifierFlagCommand) return NO;
+
+	NSString *chars = event.charactersIgnoringModifiers ?: @"";
+	if (chars.length != 1) return NO;
+
+	unichar ch = [chars characterAtIndex:0];
+	if (ch >= 'a' && ch <= 'z')
+	{
+		[self enqueueKey:COCOA_CTRL(ch - ('a' - 'A'))];
+		return YES;
+	}
+	if (ch >= '@' && ch <= '_')
+	{
+		[self enqueueKey:COCOA_CTRL(ch)];
+		return YES;
+	}
+
+	return NO;
+}
+
+- (BOOL)enqueueKeypadKeyFromEvent:(NSEvent *)event {
+	if (!(event.modifierFlags & NSEventModifierFlagNumericPad)) return NO;
+
+	switch (event.keyCode)
+	{
+		case 82: [self enqueueKey:'0']; return YES;
+		case 83: [self enqueueKey:'1']; return YES;
+		case 84: [self enqueueKey:'2']; return YES;
+		case 85: [self enqueueKey:'3']; return YES;
+		case 86: [self enqueueKey:'4']; return YES;
+		case 87: [self enqueueKey:'5']; return YES;
+		case 88: [self enqueueKey:'6']; return YES;
+		case 89: [self enqueueKey:'7']; return YES;
+		case 91: [self enqueueKey:'8']; return YES;
+		case 92: [self enqueueKey:'9']; return YES;
+		case 65: [self enqueueKey:'.']; return YES;
+		case 67: [self enqueueKey:'*']; return YES;
+		case 69: [self enqueueKey:'+']; return YES;
+		case 75: [self enqueueKey:'/']; return YES;
+		case 76: [self enqueueKey:'\r']; return YES;
+		case 78: [self enqueueKey:'-']; return YES;
+		default: return NO;
+	}
+}
+
+- (void)paste:(id)sender {
+	(void)sender;
+	NSString *text = [NSPasteboard.generalPasteboard stringForType:NSPasteboardTypeString];
+	if (text.length) [self enqueueText:text];
+}
+
+- (BOOL)validateMenuItem:(NSMenuItem *)menuItem {
+	if (menuItem.action == @selector(paste:))
+	{
+		return [NSPasteboard.generalPasteboard canReadItemWithDataConformingToTypes:@[NSPasteboardTypeString]];
+	}
+
+	return YES;
+}
+
+- (void)keyDown:(NSEvent *)event {
+	if ([self enqueueControlKeyFromEvent:event]) return;
+	if ([self enqueueKeypadKeyFromEvent:event]) return;
+
+	NSString *chars = event.charactersIgnoringModifiers ?: @"";
+	unichar key = chars.length ? [chars characterAtIndex:0] : 0;
+
+	switch (key)
+	{
+		case NSUpArrowFunctionKey:    [self enqueueKey:'8']; return;
+		case NSDownArrowFunctionKey:  [self enqueueKey:'2']; return;
+		case NSRightArrowFunctionKey: [self enqueueKey:'6']; return;
+		case NSLeftArrowFunctionKey:  [self enqueueKey:'4']; return;
+		case NSHomeFunctionKey:       [self enqueueKey:'7']; return;
+		case NSEndFunctionKey:        [self enqueueKey:'1']; return;
+		case NSPageUpFunctionKey:     [self enqueueKey:'9']; return;
+		case NSPageDownFunctionKey:   [self enqueueKey:'3']; return;
+		case NSDeleteCharacter:
+		case NSBackspaceCharacter:    [self enqueueKey:'\010']; return;
+		case NSDeleteFunctionKey:     [self enqueueKey:0x7F]; return;
+		case 0x1B:                    [self enqueueKey:ESCAPE]; return;
+		case '\r':
+		case '\n':                    [self enqueueKey:'\r']; return;
+		case '\t':                    [self enqueueKey:'\t']; return;
+		default: break;
+	}
+
+	NSString *text = event.characters ?: chars;
+	[self enqueueText:text];
+}
+
+@end
+
+static void cocoa_enqueue_key(int key)
+{
+	if (!key) return;
+
 	pthread_mutex_lock(&key_lock);
 	int next = (key_head + 1) % COCOA_KEY_QUEUE;
 	if (next != key_tail)
@@ -195,33 +320,6 @@ static void cocoa_queue_redraw(void);
 	}
 	pthread_mutex_unlock(&key_lock);
 }
-
-- (void)keyDown:(NSEvent *)event {
-	NSString *chars = event.charactersIgnoringModifiers ?: @"";
-	unichar key = chars.length ? [chars characterAtIndex:0] : 0;
-
-	switch (key)
-	{
-		case NSUpArrowFunctionKey:    [self enqueueKey:'8']; return;
-		case NSDownArrowFunctionKey:  [self enqueueKey:'2']; return;
-		case NSRightArrowFunctionKey: [self enqueueKey:'6']; return;
-		case NSLeftArrowFunctionKey:  [self enqueueKey:'4']; return;
-		case NSDeleteCharacter:
-		case NSBackspaceCharacter:    [self enqueueKey:'\010']; return;
-		case 0x1B:                    [self enqueueKey:ESCAPE]; return;
-		case '\r':
-		case '\n':                    [self enqueueKey:'\r']; return;
-		default: break;
-	}
-
-	NSString *text = event.characters ?: chars;
-	for (NSUInteger i = 0; i < text.length; i++)
-	{
-		[self enqueueKey:[text characterAtIndex:i] & 0x7F];
-	}
-}
-
-@end
 
 static void cocoa_queue_redraw(void)
 {
@@ -398,6 +496,9 @@ errr init_cocoa(int argc, char **argv, unsigned char *new_game)
 
 @implementation ZBCocoaAppDelegate {
 	NSWindow *_window;
+	BOOL _allowTerminate;
+	BOOL _isRelaunching;
+	BOOL _launchNewGame;
 }
 
 - (NSURL *)applicationSupportURL {
@@ -430,6 +531,7 @@ errr init_cocoa(int argc, char **argv, unsigned char *new_game)
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
 	(void)notification;
+	_launchNewGame = [NSProcessInfo.processInfo.arguments containsObject:@"--new-game"];
 
 	NSRect frame = NSMakeRect(0, 0, 1120, 720);
 	_window = [[NSWindow alloc] initWithContentRect:frame
@@ -455,10 +557,78 @@ errr init_cocoa(int argc, char **argv, unsigned char *new_game)
 			setenv("ANGBAND_PATH", libURL.fileSystemRepresentation, 1);
 			chdir(supportURL.fileSystemRepresentation);
 
-			char *argv[] = { "zangband", "-mcocoa", NULL };
-			zangband_game_main(2, argv);
+			char *normalArgv[] = { "zangband", "-mcocoa", NULL };
+			char *newGameArgv[] = { "zangband", "-mcocoa", "-n", NULL };
+			zangband_game_main(self->_launchNewGame ? 3 : 2,
+			                   self->_launchNewGame ? newGameArgv : normalArgv);
+
+			dispatch_async(dispatch_get_main_queue(), ^{
+				self->_allowTerminate = YES;
+				[NSApp terminate:nil];
+			});
 		}
 	});
+}
+
+- (IBAction)saveGame:(id)sender {
+	(void)sender;
+	[cocoa_view enqueueKey:COCOA_CTRL('S')];
+}
+
+- (IBAction)saveAndQuit:(id)sender {
+	(void)sender;
+	[cocoa_view enqueueKey:COCOA_CTRL('X')];
+}
+
+- (BOOL)confirmRelaunchForNewGame:(BOOL)newGame {
+	NSAlert *alert = [[NSAlert alloc] init];
+	alert.messageText = newGame ? @"Start a new game?" : @"Restart Zangband Native?";
+	alert.informativeText = @"The current native backend runs the legacy game core in-process, so restarting relaunches the app. Save first if you want to keep the current run.";
+	[alert addButtonWithTitle:newGame ? @"New Game" : @"Restart"];
+	[alert addButtonWithTitle:@"Cancel"];
+	alert.alertStyle = NSAlertStyleWarning;
+	return [alert runModal] == NSAlertFirstButtonReturn;
+}
+
+- (void)relaunchWithNewGame:(BOOL)newGame {
+	if (![self confirmRelaunchForNewGame:newGame]) return;
+
+	NSURL *executableURL = NSBundle.mainBundle.executableURL;
+	if (!executableURL) return;
+
+	NSTask *task = [[NSTask alloc] init];
+	task.executableURL = executableURL;
+	task.arguments = newGame ? @[@"--new-game"] : @[];
+
+	NSError *error = nil;
+	if (![task launchAndReturnError:&error])
+	{
+		NSAlert *alert = [NSAlert alertWithError:error];
+		[alert runModal];
+		return;
+	}
+
+	_isRelaunching = YES;
+	[NSApp terminate:nil];
+}
+
+- (IBAction)newGame:(id)sender {
+	(void)sender;
+	[self relaunchWithNewGame:YES];
+}
+
+- (IBAction)restartGame:(id)sender {
+	(void)sender;
+	[self relaunchWithNewGame:NO];
+}
+
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
+	(void)sender;
+	if (_allowTerminate || _isRelaunching) return NSTerminateNow;
+	if (!cocoa_view) return NSTerminateNow;
+
+	[cocoa_view enqueueKey:COCOA_CTRL('X')];
+	return NSTerminateCancel;
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
@@ -478,6 +648,26 @@ static void ZBCocoaInstallMainMenu(void)
 	NSMenu *appMenu = [[NSMenu alloc] initWithTitle:@"Zangband Native"];
 	[appMenu addItem:[[NSMenuItem alloc] initWithTitle:@"Quit Zangband Native" action:@selector(terminate:) keyEquivalent:@"q"]];
 	appItem.submenu = appMenu;
+
+	NSMenuItem *fileItem = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];
+	[mainMenu addItem:fileItem];
+
+	NSMenu *fileMenu = [[NSMenu alloc] initWithTitle:@"File"];
+	[fileMenu addItem:[[NSMenuItem alloc] initWithTitle:@"New Game" action:@selector(newGame:) keyEquivalent:@"n"]];
+	[fileMenu addItem:[[NSMenuItem alloc] initWithTitle:@"Restart" action:@selector(restartGame:) keyEquivalent:@"r"]];
+	[fileMenu addItem:[NSMenuItem separatorItem]];
+	[fileMenu addItem:[[NSMenuItem alloc] initWithTitle:@"Save" action:@selector(saveGame:) keyEquivalent:@"s"]];
+	NSMenuItem *saveAndQuitItem = [[NSMenuItem alloc] initWithTitle:@"Save and Quit" action:@selector(saveAndQuit:) keyEquivalent:@"s"];
+	saveAndQuitItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+	[fileMenu addItem:saveAndQuitItem];
+	fileItem.submenu = fileMenu;
+
+	NSMenuItem *editItem = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];
+	[mainMenu addItem:editItem];
+
+	NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
+	[editMenu addItem:[[NSMenuItem alloc] initWithTitle:@"Paste" action:@selector(paste:) keyEquivalent:@"v"]];
+	editItem.submenu = editMenu;
 
 	NSApp.mainMenu = mainMenu;
 }

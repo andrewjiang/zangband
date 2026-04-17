@@ -108,6 +108,9 @@ draws cells from `z-term` hooks instead of parsing pseudo-terminal output. It is
 the start of the true native port, not the release target yet. The stable app
 remains `macos/build/Zangband.app`.
 
+Native backend QA lives in `docs/native-backend-qa.md`. Mac app product ideas
+live in `docs/mac-app-ideas.md`.
+
 ## macOS Runtime Data
 
 On first launch, the app copies the bundled `lib` directory to:
