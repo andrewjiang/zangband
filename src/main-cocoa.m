@@ -28,6 +28,10 @@
 
 extern int zangband_game_main(int argc, char **argv);
 
+@protocol ZBDeathRestartPresenter <NSObject>
+- (void)maybeShowDeathRestartOptions;
+@end
+
 cptr help_cocoa[] =
 {
 	"To use Cocoa, run the native macOS app target.",
@@ -61,6 +65,7 @@ static bool redraw_queued = FALSE;
 @class ZBCocoaInspectorView;
 static ZBCocoaTermView *cocoa_view = nil;
 static ZBCocoaInspectorView *cocoa_inspector = nil;
+static id<ZBDeathRestartPresenter> cocoa_app_delegate = nil;
 static NSMutableArray<NSString *> *message_history = nil;
 static bool message_row_dirty = FALSE;
 
@@ -1047,6 +1052,7 @@ static void cocoa_queue_redraw(void)
 		pthread_mutex_unlock(&screen_lock);
 		[cocoa_view setNeedsDisplay:YES];
 		[cocoa_inspector refreshFromGame];
+		[cocoa_app_delegate maybeShowDeathRestartOptions];
 	});
 }
 
@@ -1204,13 +1210,15 @@ errr init_cocoa(int argc, char **argv, unsigned char *new_game)
 	return 0;
 }
 
-@interface ZBCocoaAppDelegate : NSObject <NSApplicationDelegate, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSSplitViewDelegate, NSMenuItemValidation>
+@interface ZBCocoaAppDelegate : NSObject <NSApplicationDelegate, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSSplitViewDelegate, NSMenuItemValidation, ZBDeathRestartPresenter>
 @end
 
 @implementation ZBCocoaAppDelegate {
 	NSWindow *_window;
 	NSSplitView *_splitView;
 	BOOL _inspectorVisible;
+	BOOL _deathOptionsShown;
+	BOOL _deathOptionsVisible;
 	NSPanel *_commandPanel;
 	NSSearchField *_commandSearch;
 	NSTableView *_commandTable;
@@ -1567,9 +1575,35 @@ errr init_cocoa(int argc, char **argv, unsigned char *new_game)
 	return YES;
 }
 
+- (BOOL)nativeDeathScreenIsVisible {
+	if (!(p_ptr && p_ptr->state.is_dead)) return NO;
+
+	for (NSString *row in cocoa_snapshot_rows())
+	{
+		if ([row rangeOfString:@"Dump char record" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+		    [row rangeOfString:@"Show char info" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+		    [row rangeOfString:@"Show top scores" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+		    [row rangeOfString:@"Do you really want to exit" options:NSCaseInsensitiveSearch].location != NSNotFound)
+		{
+			return YES;
+		}
+	}
+
+	return NO;
+}
+
+- (void)maybeShowDeathRestartOptions {
+	if (_deathOptionsShown || _deathOptionsVisible || _isRelaunching || _allowTerminate) return;
+	if (![self nativeDeathScreenIsVisible]) return;
+
+	_deathOptionsShown = YES;
+	[self showDeathRestartOptionsCanStay:YES];
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
 	(void)notification;
 	_launchNewGame = [NSProcessInfo.processInfo.arguments containsObject:@"--new-game"];
+	cocoa_app_delegate = self;
 
 	NSRect frame = NSMakeRect(0, 0, COCOA_DEFAULT_WINDOW_WIDTH, COCOA_DEFAULT_WINDOW_HEIGHT);
 	_window = [[NSWindow alloc] initWithContentRect:frame
@@ -1641,7 +1675,7 @@ errr init_cocoa(int argc, char **argv, unsigned char *new_game)
 				self->_allowTerminate = YES;
 				if (endedFromDeath)
 				{
-					[self showDeathRestartOptions];
+					[self showDeathRestartOptionsCanStay:NO];
 				}
 				else
 				{
@@ -1698,16 +1732,21 @@ errr init_cocoa(int argc, char **argv, unsigned char *new_game)
 	[self relaunchWithNewGame:newGame confirm:YES];
 }
 
-- (void)showDeathRestartOptions {
+- (void)showDeathRestartOptionsCanStay:(BOOL)canStay {
+	_deathOptionsVisible = YES;
+
 	NSAlert *alert = [[NSAlert alloc] init];
 	alert.messageText = @"Your run has ended";
-	alert.informativeText = @"Start a new character now, restart the native app, or close Zangband Native.";
+	alert.informativeText = canStay ? @"Start a new character now, restart the native app, or return to the death screen." :
+	                                  @"Start a new character now, restart the native app, or close Zangband Native.";
 	[alert addButtonWithTitle:@"New Game"];
 	[alert addButtonWithTitle:@"Restart App"];
-	[alert addButtonWithTitle:@"Close"];
+	[alert addButtonWithTitle:canStay ? @"Stay on Death Screen" : @"Close"];
 	alert.alertStyle = NSAlertStyleInformational;
 
 	NSModalResponse response = [alert runModal];
+	_deathOptionsVisible = NO;
+
 	if (response == NSAlertFirstButtonReturn)
 	{
 		[self relaunchWithNewGame:YES confirm:NO];
@@ -1718,7 +1757,10 @@ errr init_cocoa(int argc, char **argv, unsigned char *new_game)
 	}
 	else
 	{
-		[NSApp terminate:nil];
+		if (!canStay)
+		{
+			[NSApp terminate:nil];
+		}
 	}
 }
 
