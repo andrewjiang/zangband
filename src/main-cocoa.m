@@ -756,12 +756,14 @@ static NSString *ZBEquipmentReport(void)
 @end
 
 @implementation ZBCocoaInspectorView {
-	NSTabView *_tabView;
+	NSBox *_inventoryBox;
+	NSBox *_equipmentBox;
+	NSBox *_contextBox;
+	NSTabView *_contextTabs;
 	NSTextView *_messagesView;
 	NSTextView *_inventoryView;
 	NSTextView *_equipmentView;
 	NSTextView *_recallView;
-	NSTextView *_terrainView;
 }
 
 - (instancetype)initWithFrame:(NSRect)frame {
@@ -771,22 +773,41 @@ static NSString *ZBEquipmentReport(void)
 	self.wantsLayer = YES;
 	self.layer.backgroundColor = [NSColor colorWithCalibratedRed:0.055 green:0.060 blue:0.056 alpha:1.0].CGColor;
 
-	_tabView = [[NSTabView alloc] initWithFrame:NSInsetRect(self.bounds, 8.0, 8.0)];
-	_tabView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-	[self addSubview:_tabView];
+	_inventoryBox = [self addBoxWithTitle:@"Inventory"];
+	_inventoryView = [self addTextViewToBox:_inventoryBox];
 
-	_messagesView = [self addTextTab:@"Messages"];
-	_inventoryView = [self addTextTab:@"Inventory"];
-	_equipmentView = [self addTextTab:@"Equipment"];
-	_recallView = [self addTextTab:@"Recall"];
-	_terrainView = [self addTextTab:@"Terrain"];
+	_equipmentBox = [self addBoxWithTitle:@"Equipment"];
+	_equipmentView = [self addTextViewToBox:_equipmentBox];
+
+	_contextBox = [self addBoxWithTitle:@"Run Context"];
+	_contextTabs = [[NSTabView alloc] initWithFrame:_contextBox.contentView.bounds];
+	_contextTabs.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+	[_contextBox.contentView addSubview:_contextTabs];
+
+	_messagesView = [self addTextTab:@"Messages" toTabView:_contextTabs];
+	_recallView = [self addTextTab:@"Recall" toTabView:_contextTabs];
 
 	[self refreshFromGame];
 	return self;
 }
 
-- (NSTextView *)addTextTab:(NSString *)label {
-	NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:_tabView.bounds];
+- (BOOL)isFlipped {
+	return YES;
+}
+
+- (NSBox *)addBoxWithTitle:(NSString *)title {
+	NSBox *box = [[NSBox alloc] initWithFrame:NSZeroRect];
+	box.title = title;
+	box.titleFont = [NSFont systemFontOfSize:12.0 weight:NSFontWeightSemibold];
+	box.borderColor = [NSColor colorWithCalibratedRed:0.16 green:0.17 blue:0.16 alpha:1.0];
+	box.fillColor = [NSColor colorWithCalibratedRed:0.035 green:0.038 blue:0.035 alpha:1.0];
+	box.boxType = NSBoxCustom;
+	[self addSubview:box];
+	return box;
+}
+
+- (NSTextView *)textViewInScrollView:(NSScrollView **)scrollViewOut {
+	NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:NSZeroRect];
 	scrollView.borderType = NSNoBorder;
 	scrollView.hasVerticalScroller = YES;
 	scrollView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
@@ -802,12 +823,68 @@ static NSString *ZBEquipmentReport(void)
 	textView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
 	scrollView.documentView = textView;
 
+	if (scrollViewOut) *scrollViewOut = scrollView;
+	return textView;
+}
+
+- (NSTextView *)addTextViewToBox:(NSBox *)box {
+	NSScrollView *scrollView = nil;
+	NSTextView *textView = [self textViewInScrollView:&scrollView];
+	scrollView.frame = box.contentView.bounds;
+	[box.contentView addSubview:scrollView];
+	return textView;
+}
+
+- (NSTextView *)addTextTab:(NSString *)label toTabView:(NSTabView *)tabView {
+	NSScrollView *scrollView = nil;
+	NSTextView *textView = [self textViewInScrollView:&scrollView];
+	scrollView.frame = tabView.bounds;
+
 	NSTabViewItem *item = [[NSTabViewItem alloc] initWithIdentifier:label];
 	item.label = label;
 	item.view = scrollView;
-	[_tabView addTabViewItem:item];
+	[tabView addTabViewItem:item];
 
 	return textView;
+}
+
+- (void)layout {
+	[super layout];
+
+	CGFloat padding = 8.0;
+	CGFloat gap = 8.0;
+	CGFloat width = NSWidth(self.bounds) - padding * 2.0;
+	CGFloat available = NSHeight(self.bounds) - padding * 2.0 - gap * 2.0;
+	if (available <= 0.0) return;
+
+	CGFloat inventoryHeight = floor(MIN(220.0, MAX(130.0, available * 0.28)));
+	CGFloat equipmentHeight = floor(MIN(250.0, MAX(160.0, available * 0.34)));
+	CGFloat contextHeight = available - inventoryHeight - equipmentHeight;
+
+	if (contextHeight < 170.0)
+	{
+		CGFloat deficit = 170.0 - contextHeight;
+		CGFloat inventoryShrink = MIN(deficit / 2.0, MAX(0.0, inventoryHeight - 105.0));
+		inventoryHeight -= inventoryShrink;
+		deficit -= inventoryShrink;
+		CGFloat equipmentShrink = MIN(deficit, MAX(0.0, equipmentHeight - 125.0));
+		equipmentHeight -= equipmentShrink;
+		contextHeight = available - inventoryHeight - equipmentHeight;
+	}
+
+	CGFloat y = padding;
+	_inventoryBox.frame = NSMakeRect(padding, y, width, inventoryHeight);
+	y += inventoryHeight + gap;
+	_equipmentBox.frame = NSMakeRect(padding, y, width, equipmentHeight);
+	y += equipmentHeight + gap;
+	_contextBox.frame = NSMakeRect(padding, y, width, MAX(0.0, contextHeight));
+
+	for (NSBox *box in @[_inventoryBox, _equipmentBox])
+	{
+		NSView *child = box.contentView.subviews.firstObject;
+		child.frame = box.contentView.bounds;
+	}
+	_contextTabs.frame = _contextBox.contentView.bounds;
 }
 
 - (NSString *)messageHistoryText {
@@ -818,7 +895,14 @@ static NSString *ZBEquipmentReport(void)
 	pthread_mutex_unlock(&screen_lock);
 
 	if (!history.count) return @"No messages captured yet.";
-	return [history componentsJoinedByString:@"\n"];
+
+	NSMutableArray<NSString *> *newestFirst = [NSMutableArray arrayWithCapacity:history.count];
+	for (NSString *message in [history reverseObjectEnumerator])
+	{
+		[newestFirst addObject:message];
+	}
+
+	return [newestFirst componentsJoinedByString:@"\n"];
 }
 
 - (NSString *)screenSectionWithNeedles:(NSArray<NSString *> *)needles emptyTitle:(NSString *)emptyTitle {
@@ -840,57 +924,7 @@ static NSString *ZBEquipmentReport(void)
 
 	if (matches.count) return [matches componentsJoinedByString:@"\n"];
 
-	return [NSString stringWithFormat:@"%@\n\nCurrent screen\n--------------\n%@",
-	        emptyTitle, ZBJoinedVisibleScreen()];
-}
-
-- (NSString *)terrainText {
-	NSArray<NSString *> *rows = cocoa_snapshot_rows();
-	NSMutableDictionary<NSString *, NSNumber *> *counts = [NSMutableDictionary dictionary];
-
-	void (^increment)(NSString *) = ^(NSString *key) {
-		counts[key] = @((counts[key] ?: @0).integerValue + 1);
-	};
-
-	for (NSString *row in rows)
-	{
-		for (NSUInteger i = 0; i < row.length; i++)
-		{
-			switch ([row characterAtIndex:i])
-			{
-				case '.': increment(@"Floor ."); break;
-				case ',': increment(@"Grass ,"); break;
-				case ':': increment(@"Rubble :"); break;
-				case ';': increment(@"Brush ;"); break;
-				case '#': increment(@"Wall #"); break;
-				case '%': increment(@"Tree %"); break;
-				case '~': increment(@"Water ~"); break;
-				case '+': increment(@"Door +"); break;
-				case '<': increment(@"Stairs <"); break;
-				case '>': increment(@"Stairs >"); break;
-				case '*': increment(@"Treasure *"); break;
-				case '$': increment(@"Gold $"); break;
-				default: break;
-			}
-		}
-	}
-
-	NSMutableString *text = [NSMutableString stringWithString:@"Visible Terrain\n---------------\n"];
-	NSArray<NSString *> *keys = [[counts allKeys] sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
-	if (!keys.count)
-	{
-		[text appendString:@"No terrain glyphs visible on the current screen."];
-	}
-	else
-	{
-		for (NSString *key in keys)
-		{
-			[text appendFormat:@"%@: %@\n", key, counts[key]];
-		}
-	}
-
-	[text appendFormat:@"\nCurrent screen\n--------------\n%@", ZBJoinedVisibleScreen()];
-	return text;
+	return emptyTitle;
 }
 
 - (void)refreshFromGame {
@@ -906,8 +940,9 @@ static NSString *ZBEquipmentReport(void)
 	_inventoryView.string = ZBInventoryReport();
 	_equipmentView.string = ZBEquipmentReport();
 	_recallView.string = [self screenSectionWithNeedles:@[@"Recall", @"This monster", @"Kills", @"Speed", @"Armor", @"Experience"]
-	                                          emptyTitle:@"No monster recall text visible."];
-	_terrainView.string = [self terrainText];
+	                                          emptyTitle:@"No monster recall is visible yet."];
+	[_messagesView setSelectedRange:NSMakeRange(0, 0)];
+	[_messagesView scrollRangeToVisible:NSMakeRange(0, 0)];
 }
 
 @end

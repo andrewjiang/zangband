@@ -76,8 +76,8 @@ now includes Mac-facing gameplay surfaces on top of the direct `z-term` renderer
 - File > Morgue Gallery reads `scores.raw` and builds shareable run summaries.
 - Commands > Command Palette searches common commands and sends the original
   Zangband keybinding.
-- View > Side Inspector shows message history, screen-derived inventory,
-  equipment, monster recall, and visible terrain details.
+- View > Side Inspector stacks live inventory and equipment above bottom tabs
+  for newest-first messages and monster recall.
 - View > Tile Mode adds an optional terrain/object color layer while preserving
   ASCII glyphs as the primary display.
 

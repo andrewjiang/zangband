@@ -11,8 +11,8 @@ keeping deterministic gameplay intact.
   `scores.raw`, with copyable run summaries.
 - Shipped in the native backend: command palette that searches commands by name
   and sends the original keybinding.
-- Shipped in the native backend: side inspector for message history, inventory,
-  equipment, monster recall, and visible terrain details.
+- Shipped in the native backend: side inspector with stacked inventory and
+  equipment boxes plus bottom tabs for newest-first messages and monster recall.
 - Add iCloud/Dropbox-friendly save export and import without hiding the original
   save files.
 - Add native preferences for font, palette, key mode, window scale, and terrain
