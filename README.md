@@ -9,9 +9,9 @@ The goal is simple:
 > make Zangband feel at home on a modern Mac without sanding off what makes it
 > Zangband.
 
-Right now this builds a double-clickable `.app` bundle that runs the original
-game core, renders it in a native Cocoa window, and fixes several 64-bit macOS
-portability issues.
+Right now this builds a double-clickable native `.app` bundle that links the
+original game core into an AppKit process, renders through a Cocoa `z-term`
+backend, and fixes several 64-bit macOS portability issues.
 
 ![Zangband running as a native macOS app](docs/assets/zangband-mac-app.png)
 
@@ -26,38 +26,48 @@ making it playable and pleasant on modern macOS.
 
 ## What Works
 
-- Native macOS `.app` bundle at `macos/build/Zangband.app`
-- Cocoa fixed-grid renderer
+- Native macOS `.app` bundle at `macos/build/ZangbandNative.app`
+- Direct Cocoa `z-term` renderer
 - Bundled game binary and game data
-- Writable runtime data under `~/Library/Application Support/Zangband`
+- Writable runtime data under `~/Library/Application Support/ZangbandNative`
 - Keyboard input routed through the app window
 - Native menus for:
   - New Game
   - Restart
+  - Save
+  - Save and Quit
+  - Save Manager
+  - Morgue Gallery
+  - Command Palette
   - Bigger Text
   - Smaller Text
   - Actual Size
+  - Side Inspector
+  - Tile Mode
   - Fullscreen
-- Stable 80x24 logical game grid, so resizing the Mac window does not corrupt
-  the old curses UI
+- Stable fixed-cell grid, so resizing the Mac window keeps the dungeon aligned
 - Mac-specific terrain palette, so floors, trees, dirt, grass, rock, water,
   lava, and swamp read as environment instead of bright terminal foreground
+- Side inspector with stacked inventory, equipment, and tabbed message/recall
+  history
+- Random default character names instead of hardcoded player names
+- Death-screen restart flow, so a run can be restarted without closing the app
 - 64-bit macOS RNG/type-sizing fix for character generation
+- Fallback wrapper app at `macos/build/Zangband.app`
 
 ## Current Architecture
 
-The current app is intentionally pragmatic.
+The primary Mac app is now the direct Cocoa backend.
 
-The game still runs through the existing curses backend (`zangband -mgcu`) inside
-a pseudo-terminal. The macOS app parses the terminal output, keeps a native cell
-grid, and draws that grid with AppKit.
+`ZangbandNative.app` links the Zangband game core into the app process and
+implements the game's `z-term` hooks in `src/main-cocoa.m`. That removes the
+pseudo-terminal bridge from the main app path and lets the Mac UI observe game
+state directly enough to support native panels like the save manager, morgue
+gallery, command palette, and side inspector.
 
-This gives us a usable Mac app quickly while keeping the original game core
-intact.
-
-The next major step is a direct Cocoa or Metal `z-term` backend, replacing the
-pty/curses bridge entirely. That is the path to a truly high-performance native
-port.
+The older wrapper app still exists as a compatibility fallback. It runs
+`zangband -mgcu` inside a pseudo-terminal, parses the terminal output, and draws
+the resulting cells with AppKit.
 
 ## Build
 
@@ -66,26 +76,39 @@ From the repo root:
 ```sh
 ./configure --with-x11=no
 make
-make -C macos
+make -C macos native
 ```
 
-Then launch:
+Then launch the native Mac app:
 
 ```sh
+open macos/build/ZangbandNative.app
+```
+
+To build the fallback wrapper app:
+
+```sh
+make -C macos
 open macos/build/Zangband.app
 ```
 
-To produce a signed zip release artifact:
+To produce a signed native zip release artifact:
 
 ```sh
-scripts/build-macos-release.sh
+scripts/build-native-macos-release.sh
 ```
 
 Without a local Apple Developer certificate, the script uses ad-hoc signing.
 For a Developer ID build, set:
 
 ```sh
-CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" scripts/build-macos-release.sh
+CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" scripts/build-native-macos-release.sh
+```
+
+To produce a signed wrapper zip instead:
+
+```sh
+scripts/build-macos-release.sh
 ```
 
 For terminal play without the app:
@@ -96,32 +119,23 @@ TERM=xterm-256color ANGBAND_PATH="$PWD/lib" ./zangband -mgcu
 
 ## Native Cocoa Backend
 
-This branch includes the first experimental in-process Cocoa `z-term` backend:
-
-```sh
-make -C macos native
-open macos/build/ZangbandNative.app
-```
-
-That target links the Zangband game core directly into an AppKit process and
-draws cells from `z-term` hooks instead of parsing pseudo-terminal output. It is
-the start of the true native port, not the release target yet. The stable app
-remains `macos/build/Zangband.app`.
-
 Native backend QA lives in `docs/native-backend-qa.md`. Mac app product ideas
 live in `docs/mac-app-ideas.md`.
 
 ## macOS Runtime Data
 
-On first launch, the app copies the bundled `lib` directory to:
+On first launch, the native app copies the bundled `lib` directory to:
 
 ```sh
-~/Library/Application Support/Zangband/lib
+~/Library/Application Support/ZangbandNative/lib
 ```
 
 The game runs with `ANGBAND_PATH` pointed at that writable copy, so save files,
 scores, generated raw data, and player state do not need to be written inside
 the app bundle.
+
+The wrapper app uses `~/Library/Application Support/Zangband/lib`, so the two
+targets can be tested side by side.
 
 ## Why This Exists
 
@@ -137,18 +151,17 @@ This repo is that care.
 
 ### Near Term
 
-- Add app icon and signed/notarized release artifacts
-- Improve keyboard handling for Mac conventions
-- Add save/open UX around the existing savefile system
-- Add screenshots and release builds
+- Add app icon and notarized Developer ID release artifacts
+- Broaden gameplay QA before making the native target the only shipped app
 - Add regression tests for macOS portability fixes
 
 ### Native Renderer
 
-- Replace pty/curses with a direct Cocoa `z-term` backend
-- Draw dirty cells directly from the game core
-- Move from AppKit text drawing to a faster renderer if needed
-- Add optional tiles while keeping ASCII first-class
+- Keep hardening direct Cocoa `z-term` input and restart behavior
+- Move from AppKit text drawing to a faster renderer if profiling says it is
+  needed
+- Expand optional tile mode while keeping ASCII first-class
+- Add richer native panels without changing deterministic gameplay
 
 ### LLM Experiments
 

@@ -14,7 +14,7 @@ NATIVE_MACOS := $(NATIVE_CONTENTS)/MacOS
 NATIVE_RESOURCES := $(NATIVE_CONTENTS)/Resources
 NATIVE_OBJ_DIR := $(BUILD_DIR)/native-obj
 NATIVE_EXECUTABLE := $(NATIVE_MACOS)/$(NATIVE_APP_NAME)
-NATIVE_STAMP := $(NATIVE_CONTENTS)/.built
+NATIVE_STAMP := $(BUILD_DIR)/$(NATIVE_APP_NAME).built
 NATIVE_CFLAGS := -DHAVE_CONFIG_H -DUSE_COCOA -DCOCOA_ONLY -DDEFAULT_PATH=\"./lib/\" -I$(ROOT_DIR)/src -I$(ROOT_DIR)/src/lua -O2 -mmacosx-version-min=11.0 -Wno-deprecated-non-prototype -Wno-implicit-function-declaration
 NATIVE_LIBS := -framework Cocoa -lz -lrpcsvc
 
@@ -52,7 +52,7 @@ NATIVE_LUA_OBJS := $(patsubst $(ROOT_DIR)/src/lua/%.c,$(NATIVE_OBJ_DIR)/src/lua/
 NATIVE_GAME_MAIN_OBJ := $(NATIVE_OBJ_DIR)/src/main-game.o
 NATIVE_COCOA_OBJ := $(NATIVE_OBJ_DIR)/src/main-cocoa.o
 
-.PHONY: all app clean run game release native run-native
+.PHONY: all app clean run game release release-wrapper native run-native
 
 all: app
 
@@ -72,6 +72,9 @@ app: $(GAME) main.m Info.plist
 	ditto "$(ROOT_DIR)/lib" "$(RESOURCES)/lib"
 
 release:
+	"$(ROOT_DIR)/scripts/build-native-macos-release.sh"
+
+release-wrapper:
 	"$(ROOT_DIR)/scripts/build-macos-release.sh"
 
 $(NATIVE_OBJ_DIR)/src/%.o: $(ROOT_DIR)/src/%.c $(GAME)

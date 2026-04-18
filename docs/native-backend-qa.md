@@ -1,8 +1,8 @@
 # Native Cocoa Backend QA
 
-The native backend is intentionally not the default app target yet. It links the
-legacy Zangband game core into the AppKit process, so these checks are the gate
-before replacing the stable pty/curses wrapper.
+The native backend is the Mac release target. It links the legacy Zangband game
+core into the AppKit process, so these checks are the release gate before
+shipping a new signed artifact.
 
 ## Automated Checks
 
@@ -44,14 +44,14 @@ running without stderr output.
   store, leave a store, descend/ascend stairs, fight one monster, and save.
 - Recovery: relaunch after Save and Quit and confirm the save loads.
 
-## Default-App Gate
+## Release Gate
 
-Before making `ZangbandNative.app` the default release target:
+Before shipping `ZangbandNative.app`:
 
 - Complete the manual checklist on a fresh support directory.
 - Complete it again using an existing save.
 - Verify no generated files are written inside the app bundle.
 - Verify menu actions work while the game is waiting for input and while it is
   redrawing.
-- Add a screenshot comparison against the stable wrapper for title, birth,
-  town, inventory, and store screens.
+- Keep screenshot comparisons against the wrapper for title, birth, town,
+  inventory, and store screens while both targets exist.
