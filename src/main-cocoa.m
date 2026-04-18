@@ -58,6 +58,7 @@ static bool redraw_queued = FALSE;
 static ZBCocoaTermView *cocoa_view = nil;
 static ZBCocoaInspectorView *cocoa_inspector = nil;
 static NSMutableArray<NSString *> *message_history = nil;
+static bool message_row_dirty = FALSE;
 
 static void cocoa_queue_redraw(void);
 static void cocoa_enqueue_key(int key);
@@ -86,6 +87,42 @@ static NSString *ZBStringFromBytes(const char *bytes, NSUInteger length)
 	}
 
 	return ZBTrim(string);
+}
+
+static void cocoa_capture_message_from_screen(void)
+{
+	pthread_mutex_lock(&screen_lock);
+	if (!message_row_dirty)
+	{
+		pthread_mutex_unlock(&screen_lock);
+		return;
+	}
+
+	message_row_dirty = FALSE;
+
+	char line[COCOA_COLS + 1];
+	for (int x = 0; x < COCOA_COLS; x++)
+	{
+		char c = screen_cells[0][x].c;
+		line[x] = c ? c : ' ';
+	}
+	line[COCOA_COLS] = '\0';
+
+	NSString *messageLine = ZBTrim(ZBStringFromBytes(line, COCOA_COLS));
+	if (messageLine.length)
+	{
+		if (!message_history) message_history = [NSMutableArray arrayWithCapacity:COCOA_MESSAGE_LIMIT];
+		if (![message_history.lastObject isEqualToString:messageLine])
+		{
+			[message_history addObject:messageLine];
+			while (message_history.count > COCOA_MESSAGE_LIMIT)
+			{
+				[message_history removeObjectAtIndex:0];
+			}
+		}
+	}
+
+	pthread_mutex_unlock(&screen_lock);
 }
 
 static NSString *ZBKeyString(int key)
@@ -1033,6 +1070,7 @@ static errr Term_wipe_cocoa(int x, int y, int n)
 		screen_cells[y][x + i].a = TERM_DARK;
 		screen_cells[y][x + i].dirty = TRUE;
 	}
+	if (y == 0) message_row_dirty = TRUE;
 	pthread_mutex_unlock(&screen_lock);
 	cocoa_queue_redraw();
 	return 0;
@@ -1045,12 +1083,6 @@ static errr Term_text_cocoa(int x, int y, int n, byte a, cptr s)
 	if (x + n > COCOA_COLS) n = COCOA_COLS - x;
 	if (n <= 0) return 0;
 
-	NSString *messageLine = nil;
-	if (y == 0)
-	{
-		messageLine = ZBTrim(ZBStringFromBytes(s, (NSUInteger)n));
-	}
-
 	pthread_mutex_lock(&screen_lock);
 	for (int i = 0; i < n; i++)
 	{
@@ -1058,18 +1090,7 @@ static errr Term_text_cocoa(int x, int y, int n, byte a, cptr s)
 		screen_cells[y][x + i].a = a;
 		screen_cells[y][x + i].dirty = TRUE;
 	}
-	if (messageLine.length)
-	{
-		if (!message_history) message_history = [NSMutableArray arrayWithCapacity:COCOA_MESSAGE_LIMIT];
-		if (![message_history.lastObject isEqualToString:messageLine])
-		{
-			[message_history addObject:messageLine];
-			while (message_history.count > COCOA_MESSAGE_LIMIT)
-			{
-				[message_history removeObjectAtIndex:0];
-			}
-		}
-	}
+	if (y == 0) message_row_dirty = TRUE;
 	pthread_mutex_unlock(&screen_lock);
 	cocoa_queue_redraw();
 	return 0;
@@ -1102,6 +1123,7 @@ static errr Term_xtra_cocoa(int n, int v)
 		case TERM_XTRA_FROSH:
 		case TERM_XTRA_FRESH:
 		case TERM_XTRA_REACT:
+			cocoa_capture_message_from_screen();
 			cocoa_queue_redraw();
 			return 0;
 
