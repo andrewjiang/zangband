@@ -135,6 +135,26 @@ static NSString *ZBKeyString(int key)
 	return [NSString stringWithCharacters:&ch length:1];
 }
 
+static NSString *ZBRandomCharacterName(void)
+{
+	static NSArray<NSString *> *names = nil;
+	static dispatch_once_t onceToken;
+	dispatch_once(&onceToken, ^{
+		names = @[
+			@"Aelar", @"Alden", @"Anwen", @"Arlen", @"Ashwyn", @"Bastian",
+			@"Briar", @"Calder", @"Cassia", @"Corwin", @"Darian", @"Delwyn",
+			@"Elara", @"Elowen", @"Emrys", @"Fenric", @"Galen", @"Garrick",
+			@"Halden", @"Ilyra", @"Isolde", @"Jareth", @"Kael", @"Kestrel",
+			@"Liora", @"Lucan", @"Maelis", @"Mira", @"Nerys", @"Nyx",
+			@"Orin", @"Perrin", @"Quill", @"Rowan", @"Sable", @"Selene",
+			@"Seren", @"Sylas", @"Tamsin", @"Thorne", @"Varek", @"Vesper",
+			@"Wren", @"Ysara", @"Zephyr"
+		];
+	});
+
+	return names[arc4random_uniform((uint32_t)names.count)];
+}
+
 static NSArray<NSURL *> *ZBApplicationSupportRoots(void)
 {
 	NSFileManager *fm = NSFileManager.defaultManager;
@@ -1233,6 +1253,26 @@ errr init_cocoa(int argc, char **argv, unsigned char *new_game)
 	return target;
 }
 
+- (BOOL)hasNativeSaveFilesAtSupportURL:(NSURL *)supportURL {
+	NSFileManager *fm = NSFileManager.defaultManager;
+	NSURL *saveURL = [[supportURL URLByAppendingPathComponent:@"lib" isDirectory:YES] URLByAppendingPathComponent:@"save" isDirectory:YES];
+	NSArray<NSURL *> *files = [fm contentsOfDirectoryAtURL:saveURL
+	                             includingPropertiesForKeys:@[NSURLIsRegularFileKey]
+	                                                options:NSDirectoryEnumerationSkipsHiddenFiles
+	                                                  error:nil] ?: @[];
+
+	for (NSURL *fileURL in files)
+	{
+		if ([fileURL.lastPathComponent isEqualToString:@"makefile.zb"]) continue;
+
+		NSNumber *isRegular = nil;
+		[fileURL getResourceValue:&isRegular forKey:NSURLIsRegularFileKey error:nil];
+		if (isRegular.boolValue) return YES;
+	}
+
+	return NO;
+}
+
 - (NSDictionary<NSString *, id> *)commandWithName:(NSString *)name key:(NSString *)key sequence:(NSString *)sequence detail:(NSString *)detail {
 	return @{ @"name": name, @"key": key, @"sequence": sequence, @"detail": detail };
 }
@@ -1568,16 +1608,33 @@ errr init_cocoa(int argc, char **argv, unsigned char *new_game)
 
 	NSURL *supportURL = [self applicationSupportURL];
 	NSURL *libURL = [self preparedLibURL];
+	BOOL shouldGenerateName = _launchNewGame || ![self hasNativeSaveFilesAtSupportURL:supportURL];
+	NSString *generatedName = shouldGenerateName ? ZBRandomCharacterName() : nil;
 
 	dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
 		@autoreleasepool {
 			setenv("ANGBAND_PATH", libURL.fileSystemRepresentation, 1);
 			chdir(supportURL.fileSystemRepresentation);
 
-			char *normalArgv[] = { "zangband", "-mcocoa", NULL };
-			char *newGameArgv[] = { "zangband", "-mcocoa", "-n", NULL };
-			zangband_game_main(self->_launchNewGame ? 3 : 2,
-			                   self->_launchNewGame ? newGameArgv : normalArgv);
+			NSMutableArray<NSString *> *gameArguments = [NSMutableArray arrayWithObjects:@"zangband", @"-mcocoa", nil];
+			if (generatedName.length)
+			{
+				[gameArguments addObject:[@"-u" stringByAppendingString:generatedName]];
+			}
+			if (self->_launchNewGame)
+			{
+				[gameArguments addObject:@"-n"];
+			}
+
+			int gameArgc = (int)gameArguments.count;
+			char **gameArgv = calloc((size_t)gameArgc + 1, sizeof(char *));
+			for (int i = 0; i < gameArgc; i++)
+			{
+				gameArgv[i] = (char *)[gameArguments[(NSUInteger)i] UTF8String];
+			}
+
+			zangband_game_main(gameArgc, gameArgv);
+			free(gameArgv);
 
 			BOOL endedFromDeath = (p_ptr && p_ptr->state.is_dead);
 			dispatch_async(dispatch_get_main_queue(), ^{
