@@ -18,7 +18,11 @@
 #define COCOA_COLS 80
 #define COCOA_ROWS 24
 #define COCOA_KEY_QUEUE 1024
-#define COCOA_INSPECTOR_WIDTH 310.0
+#define COCOA_DEFAULT_WINDOW_WIDTH 1280.0
+#define COCOA_DEFAULT_WINDOW_HEIGHT 760.0
+#define COCOA_TERMINAL_MIN_WIDTH 700.0
+#define COCOA_INSPECTOR_WIDTH 372.0
+#define COCOA_INSPECTOR_MIN_WIDTH 300.0
 #define COCOA_MESSAGE_LIMIT 300
 #define COCOA_CTRL(c) ((c) & 0x1F)
 
@@ -1467,13 +1471,13 @@ errr init_cocoa(int argc, char **argv, unsigned char *new_game)
 - (CGFloat)splitView:(NSSplitView *)splitView constrainMinCoordinate:(CGFloat)proposedMinimumPosition ofSubviewAt:(NSInteger)dividerIndex {
 	(void)splitView;
 	(void)dividerIndex;
-	return MAX(proposedMinimumPosition, 620.0);
+	return MAX(proposedMinimumPosition, COCOA_TERMINAL_MIN_WIDTH);
 }
 
 - (CGFloat)splitView:(NSSplitView *)splitView constrainMaxCoordinate:(CGFloat)proposedMaximumPosition ofSubviewAt:(NSInteger)dividerIndex {
 	(void)dividerIndex;
 	if (!_inspectorVisible) return proposedMaximumPosition;
-	return MIN(proposedMaximumPosition, NSWidth(splitView.bounds) - 260.0);
+	return MIN(proposedMaximumPosition, NSWidth(splitView.bounds) - COCOA_INSPECTOR_MIN_WIDTH);
 }
 
 - (BOOL)splitView:(NSSplitView *)splitView canCollapseSubview:(NSView *)subview {
@@ -1495,7 +1499,9 @@ errr init_cocoa(int argc, char **argv, unsigned char *new_game)
 		return;
 	}
 
-	CGFloat inspectorWidth = MIN(COCOA_INSPECTOR_WIDTH, MAX(260.0, width - 620.0 - divider));
+	CGFloat inspectorWidth = MIN(COCOA_INSPECTOR_WIDTH,
+	                             MAX(COCOA_INSPECTOR_MIN_WIDTH,
+	                                 width - COCOA_TERMINAL_MIN_WIDTH - divider));
 	CGFloat terminalWidth = MAX(0.0, width - inspectorWidth - divider);
 
 	cocoa_view.frame = NSMakeRect(0, 0, terminalWidth, height);
@@ -1525,16 +1531,16 @@ errr init_cocoa(int argc, char **argv, unsigned char *new_game)
 	(void)notification;
 	_launchNewGame = [NSProcessInfo.processInfo.arguments containsObject:@"--new-game"];
 
-	NSRect frame = NSMakeRect(0, 0, 1120, 720);
+	NSRect frame = NSMakeRect(0, 0, COCOA_DEFAULT_WINDOW_WIDTH, COCOA_DEFAULT_WINDOW_HEIGHT);
 	_window = [[NSWindow alloc] initWithContentRect:frame
 	                                      styleMask:(NSWindowStyleMaskTitled |
 	                                                 NSWindowStyleMaskClosable |
 	                                                 NSWindowStyleMaskMiniaturizable |
 	                                                 NSWindowStyleMaskResizable)
-	                                        backing:NSBackingStoreBuffered
-	                                          defer:NO];
+							 backing:NSBackingStoreBuffered
+							  defer:NO];
 	_window.title = @"Zangband Native";
-	_window.minSize = NSMakeSize(860, 560);
+	_window.minSize = NSMakeSize(COCOA_TERMINAL_MIN_WIDTH + COCOA_INSPECTOR_MIN_WIDTH + 20.0, 600.0);
 
 	_splitView = [[NSSplitView alloc] initWithFrame:frame];
 	_splitView.vertical = YES;
@@ -1573,9 +1579,17 @@ errr init_cocoa(int argc, char **argv, unsigned char *new_game)
 			zangband_game_main(self->_launchNewGame ? 3 : 2,
 			                   self->_launchNewGame ? newGameArgv : normalArgv);
 
+			BOOL endedFromDeath = (p_ptr && p_ptr->state.is_dead);
 			dispatch_async(dispatch_get_main_queue(), ^{
 				self->_allowTerminate = YES;
-				[NSApp terminate:nil];
+				if (endedFromDeath)
+				{
+					[self showDeathRestartOptions];
+				}
+				else
+				{
+					[NSApp terminate:nil];
+				}
 			});
 		}
 	});
@@ -1601,8 +1615,8 @@ errr init_cocoa(int argc, char **argv, unsigned char *new_game)
 	return [alert runModal] == NSAlertFirstButtonReturn;
 }
 
-- (void)relaunchWithNewGame:(BOOL)newGame {
-	if (![self confirmRelaunchForNewGame:newGame]) return;
+- (void)relaunchWithNewGame:(BOOL)newGame confirm:(BOOL)confirm {
+	if (confirm && ![self confirmRelaunchForNewGame:newGame]) return;
 
 	NSURL *executableURL = NSBundle.mainBundle.executableURL;
 	if (!executableURL) return;
@@ -1621,6 +1635,34 @@ errr init_cocoa(int argc, char **argv, unsigned char *new_game)
 
 	_isRelaunching = YES;
 	[NSApp terminate:nil];
+}
+
+- (void)relaunchWithNewGame:(BOOL)newGame {
+	[self relaunchWithNewGame:newGame confirm:YES];
+}
+
+- (void)showDeathRestartOptions {
+	NSAlert *alert = [[NSAlert alloc] init];
+	alert.messageText = @"Your run has ended";
+	alert.informativeText = @"Start a new character now, restart the native app, or close Zangband Native.";
+	[alert addButtonWithTitle:@"New Game"];
+	[alert addButtonWithTitle:@"Restart App"];
+	[alert addButtonWithTitle:@"Close"];
+	alert.alertStyle = NSAlertStyleInformational;
+
+	NSModalResponse response = [alert runModal];
+	if (response == NSAlertFirstButtonReturn)
+	{
+		[self relaunchWithNewGame:YES confirm:NO];
+	}
+	else if (response == NSAlertSecondButtonReturn)
+	{
+		[self relaunchWithNewGame:NO confirm:NO];
+	}
+	else
+	{
+		[NSApp terminate:nil];
+	}
 }
 
 - (IBAction)newGame:(id)sender {
