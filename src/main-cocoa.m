@@ -439,13 +439,14 @@ static NSString *ZBEquipmentReport(void)
 
 @implementation ZBCocoaTermView {
 	NSFont *_font;
-	NSFont *_boldFont;
 	CGFloat _cellWidth;
 	CGFloat _cellHeight;
 	CGFloat _baselineOffset;
 	CGFloat _contentX;
 	CGFloat _contentY;
 	NSArray<NSColor *> *_colors;
+	NSArray<NSString *> *_glyphs;
+	NSArray<NSDictionary<NSAttributedStringKey, id> *> *_textAttributes;
 	BOOL _tileMode;
 }
 
@@ -454,7 +455,6 @@ static NSString *ZBEquipmentReport(void)
 	if (!self) return nil;
 
 	_font = [NSFont fontWithName:@"Menlo-Regular" size:16.0] ?: [NSFont monospacedSystemFontOfSize:16.0 weight:NSFontWeightRegular];
-	_boldFont = [NSFont fontWithName:@"Menlo-Bold" size:16.0] ?: [NSFont monospacedSystemFontOfSize:16.0 weight:NSFontWeightBold];
 
 	NSDictionary *attrs = @{ NSFontAttributeName: _font };
 	_cellWidth = ceil([@"W" sizeWithAttributes:attrs].width);
@@ -479,6 +479,24 @@ static NSString *ZBEquipmentReport(void)
 		[NSColor colorWithCalibratedRed:0.40 green:0.72 blue:0.82 alpha:1.0],
 		[NSColor colorWithCalibratedRed:0.70 green:0.56 blue:0.38 alpha:1.0]
 	];
+
+	NSMutableArray<NSString *> *glyphs = [NSMutableArray arrayWithCapacity:128];
+	for (NSUInteger i = 0; i < 128; i++)
+	{
+		unichar ch = (unichar)i;
+		[glyphs addObject:[NSString stringWithCharacters:&ch length:1]];
+	}
+	_glyphs = glyphs;
+
+	NSMutableArray<NSDictionary<NSAttributedStringKey, id> *> *textAttributes = [NSMutableArray arrayWithCapacity:_colors.count];
+	for (NSColor *color in _colors)
+	{
+		[textAttributes addObject:@{
+			NSFontAttributeName: _font,
+			NSForegroundColorAttributeName: color
+		}];
+	}
+	_textAttributes = textAttributes;
 
 	return self;
 }
@@ -566,9 +584,6 @@ static NSString *ZBEquipmentReport(void)
 	[[NSColor blackColor] setFill];
 	NSRectFill(terminalRect);
 
-	NSMutableString *run = [NSMutableString stringWithCapacity:COCOA_COLS];
-	NSMutableDictionary<NSAttributedStringKey, id> *attrs = [@{ NSFontAttributeName: _font } mutableCopy];
-
 	pthread_mutex_lock(&screen_lock);
 	if (_tileMode)
 	{
@@ -592,26 +607,18 @@ static NSString *ZBEquipmentReport(void)
 
 	for (int y = 0; y < COCOA_ROWS; y++)
 	{
-		int x = 0;
-		while (x < COCOA_COLS)
+		for (int x = 0; x < COCOA_COLS; x++)
 		{
-			byte attr = screen_cells[y][x].a;
-			int start = x;
-			[run setString:@""];
+			unsigned char c = (unsigned char)(screen_cells[y][x].c ? screen_cells[y][x].c : ' ');
+			screen_cells[y][x].dirty = FALSE;
+			if (c == ' ') continue;
 
-			while (x < COCOA_COLS && screen_cells[y][x].a == attr)
-			{
-				char c = screen_cells[y][x].c ? screen_cells[y][x].c : ' ';
-				[run appendFormat:@"%C", (unichar)c];
-				screen_cells[y][x].dirty = FALSE;
-				x++;
-			}
-
-			attrs[NSForegroundColorAttributeName] = [self colorForAttr:attr];
-			attrs[NSFontAttributeName] = (attr >= 8) ? _boldFont : _font;
-			[run drawAtPoint:NSMakePoint(_contentX + (CGFloat)start * _cellWidth,
-			                             _contentY + (CGFloat)y * _cellHeight + _baselineOffset)
-			      withAttributes:attrs];
+			byte attr = screen_cells[y][x].a % 16;
+			NSString *glyph = (c < _glyphs.count) ? _glyphs[c] : @"?";
+			NSDictionary<NSAttributedStringKey, id> *attrs = _textAttributes[MIN((NSUInteger)attr, _textAttributes.count - 1)];
+			[glyph drawAtPoint:NSMakePoint(_contentX + (CGFloat)x * _cellWidth,
+			                                _contentY + (CGFloat)y * _cellHeight + _baselineOffset)
+			     withAttributes:attrs];
 		}
 	}
 
