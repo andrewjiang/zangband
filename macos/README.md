@@ -110,3 +110,5 @@ The app provides native menu items for common Mac workflows:
 - View > Tile Mode
 - View > Enter Full Screen
 - Commands > Command Palette
+- Hold Shift with an arrow, Home, End, Page Up, Page Down, or numpad direction
+  to run in that direction.

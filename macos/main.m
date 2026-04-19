@@ -434,15 +434,26 @@ typedef NS_ENUM(NSUInteger, ZBParserState) {
     (void)write(_masterFd, bytes, length);
 }
 
+- (BOOL)eventShouldRun:(NSEvent *)event {
+    NSEventModifierFlags flags = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+    return ((flags & NSEventModifierFlagShift) &&
+            !(flags & (NSEventModifierFlagCommand | NSEventModifierFlagControl | NSEventModifierFlagOption)));
+}
+
+- (void)writeDirectionBytes:(const char *)bytes length:(size_t)length fromEvent:(NSEvent *)event {
+    if ([self eventShouldRun:event]) [self writeBytes:"." length:1];
+    [self writeBytes:bytes length:length];
+}
+
 - (void)keyDown:(NSEvent *)event {
     NSString *chars = event.charactersIgnoringModifiers ?: @"";
     unichar key = chars.length ? [chars characterAtIndex:0] : 0;
 
     switch (key) {
-        case NSUpArrowFunctionKey:    [self writeBytes:"\033[A" length:3]; return;
-        case NSDownArrowFunctionKey:  [self writeBytes:"\033[B" length:3]; return;
-        case NSRightArrowFunctionKey: [self writeBytes:"\033[C" length:3]; return;
-        case NSLeftArrowFunctionKey:  [self writeBytes:"\033[D" length:3]; return;
+        case NSUpArrowFunctionKey:    [self writeDirectionBytes:"\033[A" length:3 fromEvent:event]; return;
+        case NSDownArrowFunctionKey:  [self writeDirectionBytes:"\033[B" length:3 fromEvent:event]; return;
+        case NSRightArrowFunctionKey: [self writeDirectionBytes:"\033[C" length:3 fromEvent:event]; return;
+        case NSLeftArrowFunctionKey:  [self writeDirectionBytes:"\033[D" length:3 fromEvent:event]; return;
         case NSDeleteCharacter:
         case NSBackspaceCharacter:    [self writeBytes:"\177" length:1]; return;
         case 0x1B:                    [self writeBytes:"\033" length:1]; return;

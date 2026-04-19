@@ -50,6 +50,7 @@ making it playable and pleasant on modern macOS.
   lava, and swamp read as environment instead of bright terminal foreground
 - Side inspector with stacked inventory, equipment, and tabbed message/recall
   history
+- Shift-direction run shortcuts for laptop keyboards
 - Random default character names instead of hardcoded player names
 - Death-screen restart flow, so a run can be restarted without closing the app
 - 64-bit macOS RNG/type-sizing fix for character generation

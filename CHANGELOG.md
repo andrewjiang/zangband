@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Shift-direction run shortcuts in the native app and wrapper fallback, so
+  laptop players can hold Shift with arrow keys instead of pressing `.` before
+  a direction.
+- Run commands in the native command palette.
+
 ## macos-v0.1.0 - 2026-04-18
 
 ### Added

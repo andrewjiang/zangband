@@ -140,6 +140,11 @@ static NSString *ZBKeyString(int key)
 	return [NSString stringWithCharacters:&ch length:1];
 }
 
+static NSString *ZBRunSequence(int direction)
+{
+	return [NSString stringWithFormat:@"%@%@", ZBKeyString('.'), ZBKeyString(direction)];
+}
+
 static NSString *ZBRandomCharacterName(void)
 {
 	static NSArray<NSString *> *names = nil;
@@ -704,6 +709,17 @@ static NSString *ZBEquipmentReport(void)
 	cocoa_enqueue_key(key);
 }
 
+- (BOOL)eventShouldRun:(NSEvent *)event {
+	NSEventModifierFlags flags = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+	return ((flags & NSEventModifierFlagShift) &&
+	        !(flags & (NSEventModifierFlagCommand | NSEventModifierFlagControl | NSEventModifierFlagOption)));
+}
+
+- (void)enqueueDirectionKey:(int)direction fromEvent:(NSEvent *)event {
+	if ([self eventShouldRun:event]) [self enqueueKey:'.'];
+	[self enqueueKey:direction];
+}
+
 - (void)enqueueText:(NSString *)text {
 	for (NSUInteger i = 0; i < text.length; i++)
 	{
@@ -752,15 +768,15 @@ static NSString *ZBEquipmentReport(void)
 	switch (event.keyCode)
 	{
 		case 82: [self enqueueKey:'0']; return YES;
-		case 83: [self enqueueKey:'1']; return YES;
-		case 84: [self enqueueKey:'2']; return YES;
-		case 85: [self enqueueKey:'3']; return YES;
-		case 86: [self enqueueKey:'4']; return YES;
+		case 83: [self enqueueDirectionKey:'1' fromEvent:event]; return YES;
+		case 84: [self enqueueDirectionKey:'2' fromEvent:event]; return YES;
+		case 85: [self enqueueDirectionKey:'3' fromEvent:event]; return YES;
+		case 86: [self enqueueDirectionKey:'4' fromEvent:event]; return YES;
 		case 87: [self enqueueKey:'5']; return YES;
-		case 88: [self enqueueKey:'6']; return YES;
-		case 89: [self enqueueKey:'7']; return YES;
-		case 91: [self enqueueKey:'8']; return YES;
-		case 92: [self enqueueKey:'9']; return YES;
+		case 88: [self enqueueDirectionKey:'6' fromEvent:event]; return YES;
+		case 89: [self enqueueDirectionKey:'7' fromEvent:event]; return YES;
+		case 91: [self enqueueDirectionKey:'8' fromEvent:event]; return YES;
+		case 92: [self enqueueDirectionKey:'9' fromEvent:event]; return YES;
 		case 65: [self enqueueKey:'.']; return YES;
 		case 67: [self enqueueKey:'*']; return YES;
 		case 69: [self enqueueKey:'+']; return YES;
@@ -800,14 +816,14 @@ static NSString *ZBEquipmentReport(void)
 
 	switch (key)
 	{
-		case NSUpArrowFunctionKey:    [self enqueueKey:'8']; return;
-		case NSDownArrowFunctionKey:  [self enqueueKey:'2']; return;
-		case NSRightArrowFunctionKey: [self enqueueKey:'6']; return;
-		case NSLeftArrowFunctionKey:  [self enqueueKey:'4']; return;
-		case NSHomeFunctionKey:       [self enqueueKey:'7']; return;
-		case NSEndFunctionKey:        [self enqueueKey:'1']; return;
-		case NSPageUpFunctionKey:     [self enqueueKey:'9']; return;
-		case NSPageDownFunctionKey:   [self enqueueKey:'3']; return;
+		case NSUpArrowFunctionKey:    [self enqueueDirectionKey:'8' fromEvent:event]; return;
+		case NSDownArrowFunctionKey:  [self enqueueDirectionKey:'2' fromEvent:event]; return;
+		case NSRightArrowFunctionKey: [self enqueueDirectionKey:'6' fromEvent:event]; return;
+		case NSLeftArrowFunctionKey:  [self enqueueDirectionKey:'4' fromEvent:event]; return;
+		case NSHomeFunctionKey:       [self enqueueDirectionKey:'7' fromEvent:event]; return;
+		case NSEndFunctionKey:        [self enqueueDirectionKey:'1' fromEvent:event]; return;
+		case NSPageUpFunctionKey:     [self enqueueDirectionKey:'9' fromEvent:event]; return;
+		case NSPageDownFunctionKey:   [self enqueueDirectionKey:'3' fromEvent:event]; return;
 		case NSDeleteCharacter:
 		case NSBackspaceCharacter:    [self enqueueKey:'\010']; return;
 		case NSDeleteFunctionKey:     [self enqueueKey:0x7F]; return;
@@ -1297,6 +1313,14 @@ errr init_cocoa(int argc, char **argv, unsigned char *new_game)
 		[self commandWithName:@"Move northeast" key:@"9" sequence:ZBKeyString('9') detail:@"Walk or attack northeast"],
 		[self commandWithName:@"Move southwest" key:@"1" sequence:ZBKeyString('1') detail:@"Walk or attack southwest"],
 		[self commandWithName:@"Move southeast" key:@"3" sequence:ZBKeyString('3') detail:@"Walk or attack southeast"],
+		[self commandWithName:@"Run north" key:@"Shift-Up / .8" sequence:ZBRunSequence('8') detail:@"Run north until interrupted"],
+		[self commandWithName:@"Run south" key:@"Shift-Down / .2" sequence:ZBRunSequence('2') detail:@"Run south until interrupted"],
+		[self commandWithName:@"Run west" key:@"Shift-Left / .4" sequence:ZBRunSequence('4') detail:@"Run west until interrupted"],
+		[self commandWithName:@"Run east" key:@"Shift-Right / .6" sequence:ZBRunSequence('6') detail:@"Run east until interrupted"],
+		[self commandWithName:@"Run northwest" key:@"Shift-Home / .7" sequence:ZBRunSequence('7') detail:@"Run northwest until interrupted"],
+		[self commandWithName:@"Run northeast" key:@"Shift-PgUp / .9" sequence:ZBRunSequence('9') detail:@"Run northeast until interrupted"],
+		[self commandWithName:@"Run southwest" key:@"Shift-End / .1" sequence:ZBRunSequence('1') detail:@"Run southwest until interrupted"],
+		[self commandWithName:@"Run southeast" key:@"Shift-PgDn / .3" sequence:ZBRunSequence('3') detail:@"Run southeast until interrupted"],
 		[self commandWithName:@"Wait" key:@"5" sequence:ZBKeyString('5') detail:@"Spend one turn in place"],
 		[self commandWithName:@"Get item" key:@"g" sequence:ZBKeyString('g') detail:@"Pick up an item"],
 		[self commandWithName:@"Inventory" key:@"i" sequence:ZBKeyString('i') detail:@"Open inventory"],
